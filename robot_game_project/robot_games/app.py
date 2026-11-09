@@ -1,10 +1,10 @@
 import argparse
 from pathlib import Path
+from runpy import run_path  # [TIC 연결] 전용 게임 파일을 경로로 불러온다.
 import cv2
 import yaml
 from . import vision as vision_mod
-from .vision import recognize_card, tic_board_from_image
-from .tictactoe import best_move, outcome, render_board
+from .vision import recognize_card  # [TIC 연결] 카드 인식은 app.py에서 처리한다.
 from .maze import generate_maze, solve_maze, overlay
 from .motion import MockRobot, GuardedDoosan, image_path_to_base
 
@@ -12,28 +12,12 @@ ROOT=Path(__file__).resolve().parents[1]
 def cfg_load(path):
     with open(path,encoding='utf8') as f: return yaml.safe_load(f)
 
+# [TIC 연결] 틱택토가 선택되면 전용 폴더의 run()에 실행을 넘긴다.
 def tictactoe(args,robot,cfg):
-    board=[[' ',' ',' '],[' ','X',' '],[' ',' ',' ']]
-    if args.image:
-        img=cv2.imread(args.image)
-        if img is None: raise ValueError(f'Could not load {args.image}')
-        board=tic_board_from_image(img)
-    winner=outcome(board)
-    move=best_move(board) if winner is None else None
-    if move:
-        r,c=move; board[r][c]='O'
-        # Pixel path for O stroke, preserving pen-up between separate actions.
-        import numpy as np
-        center=((2*c+1)*100,(2*r+1)*100)
-        path=[(int(center[0]+65*np.cos(t)),int(center[1]+65*np.sin(t))) for t in np.linspace(0,2*np.pi,64)]
-        if isinstance(robot,MockRobot): robot.draw(path,'tic-tac-toe O')
-        else: robot.draw(image_path_to_base(path,(900,900),cfg['robot']),'tic-tac-toe O')
-    final=outcome(board)
-    out=ROOT/'out';out.mkdir(exist_ok=True)
-    cv2.imwrite(str(out/'tictactoe_result.png'),render_board(board))
-    print('Board:');print('\n'.join(' | '.join(row) for row in board));print('Winner:',final,'Move:',move)
-    if final=='O': robot.celebrate()
-    robot.home()
+    game_file = Path(__file__).with_name('tictactoe') / 'tictactoe.py'
+    # 기존 robot_games.tictactoe 모듈과 이름이 겹치므로 전용 파일을 경로로 지정한다.
+    game = run_path(str(game_file), run_name=f'{__package__}._tictactoe_game')
+    return game['run'](args, robot, cfg)
 
 def maze(args,robot,cfg):
     if args.image:
