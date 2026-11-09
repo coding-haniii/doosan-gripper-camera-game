@@ -1,0 +1,18 @@
+{
+  "mode": "mock",
+  "simulation_only": true,
+  "calibration_file": "my_verified_calibration.json",
+  "calibration_verified": false,
+  "plan_file": "paper_maze_pen_plan.json",
+  "plan_sha256": "e7d92cae1ac52e1b64a9f5deb04aa6b41108d4d951cce29bf6ae0b8cf3ec4538",
+  "csv": "/home/khe/ros2_ws/src/robot_game_project_git/out/maze_coordinates_SIMULATION_ONLY.csv",
+  "csv_sha256": "36b648d7599b15d06ee4afde9716a6474a3173fa0dd50bb21101a0ec42b66d93",
+  "rows": 352,
+  "xy_bbox_mm": [
+    433.723,
+    112.354,
+    576.294,
+    275.292
+  ],
+  "created_at": "2026-11-08 20:43:20"
+}

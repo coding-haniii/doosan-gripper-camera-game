@@ -1,0 +1,38 @@
+camera:
+  index: 0
+  crop: null
+vision:
+  card_min_confidence: 0.55
+  maze_threshold: 170
+  maze_clearance_px: 3
+  maze_step_px: 8
+robot:
+  namespace: dsr01
+  model: e0509
+  mode: mock
+  # All real motion disabled unless explicitly armed, AND calibrated.
+  armed: false
+  calibration_confirmed: false
+  home_joints_deg: null
+  celebration_joints_deg: null
+  # Plane coordinate calibration, measured on-site (not example coordinates).
+  board_origin_base_mm: null
+  board_x_axis_base_mm: null
+  board_y_axis_base_mm: null
+  drawing_z_base_mm: null
+  safe_z_base_mm: null
+  tool_rpy_deg: null
+  max_path_points: 1500
+  max_board_side_mm: 300
+  speed_mm_s: 15
+  accel_mm_s2: 30
+  joint_speed_deg_s: 10
+  joint_accel_deg_s2: 20
+gripper:
+  enabled: false
+  port: /dev/ttyUSB0
+  baud: 57600
+  id: 1
+  # Positions need manual verification from actual hardware setup.
+  open_position: null
+  closed_position: null

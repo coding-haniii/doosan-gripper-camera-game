@@ -1,0 +1,132 @@
+{
+ "meta": {
+  "generated": "2026-11-08 06:46:58",
+  "attempts": {
+   "exit": 3,
+   "tictactoe": 12,
+   "maze": 3
+  },
+  "min_support": 2
+ },
+ "edge_noise": "",
+ "aliases": {
+  "tictactoe": {
+   "11": {
+    "weight": 1.0,
+    "support": 5,
+    "src": "log"
+   },
+   "VIC": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "FIG": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "PIG": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "116": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "1G": {
+    "weight": 0.9,
+    "support": 0,
+    "src": "seed"
+   }
+  },
+  "maze": {
+   "미루": {
+    "weight": 0.9,
+    "support": 0,
+    "src": "seed"
+   },
+   "니오": {
+    "weight": 0.9,
+    "support": 0,
+    "src": "seed"
+   }
+  },
+  "exit": {
+   "송료": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "승도": {
+    "weight": 0.9,
+    "support": 0,
+    "src": "seed"
+   },
+   "송도": {
+    "weight": 0.9,
+    "support": 0,
+    "src": "seed"
+   }
+  }
+ },
+ "confusions": {
+  "V": {
+   "T": 0.5
+  },
+  "F": {
+   "T": 0.67
+  },
+  "G": {
+   "C": 0.75
+  },
+  "P": {
+   "T": 0.5
+  },
+  "루": {
+   "로": 0.33
+  },
+  "송": {
+   "종": 0.5
+  },
+  "1": {
+   "T": 0.5
+  },
+  "I": {
+   "T": 0.5
+  },
+  "L": {
+   "T": 0.5
+  },
+  "3": {
+   "2": 0.5
+  },
+  "4": {
+   "2": 0.5
+  }
+ },
+ "digit_posterior": {
+  "1": {
+   "tictactoe": 0.769,
+   "maze": 0.231,
+   "exit": 0.0
+  },
+  "2": {
+   "tictactoe": 0.146,
+   "maze": 0.526,
+   "exit": 0.328
+  },
+  "3": {
+   "tictactoe": 0.118,
+   "maze": 0.0,
+   "exit": 0.882
+  }
+ },
+ "source_weights": {
+  "eng/digit": 0.47,
+  "kor/whole": 0.79,
+  "eng/whole": 1.0
+ }
+}

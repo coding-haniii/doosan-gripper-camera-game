@@ -1,0 +1,117 @@
+import argparse
+from pathlib import Path
+import cv2
+import yaml
+from .vision import recognize_card, tic_board_from_image
+from .tictactoe import best_move, outcome, render_board
+from .maze import generate_maze, solve_maze, overlay
+from .motion import MockRobot, GuardedDoosan, image_path_to_base
+
+ROOT=Path(__file__).resolve().parents[1]
+def cfg_load(path):
+    with open(path,encoding='utf8') as f: return yaml.safe_load(f)
+
+def tictactoe(args,robot,cfg):
+    board=[[' ',' ',' '],[' ','X',' '],[' ',' ',' ']]
+    if args.image:
+        img=cv2.imread(args.image)
+        if img is None: raise ValueError(f'Could not load {args.image}')
+        board=tic_board_from_image(img)
+    winner=outcome(board)
+    move=best_move(board) if winner is None else None
+    if move:
+        r,c=move; board[r][c]='O'
+        # Pixel path for O stroke, preserving pen-up between separate actions.
+        import numpy as np
+        center=((2*c+1)*100,(2*r+1)*100)
+        path=[(int(center[0]+65*np.cos(t)),int(center[1]+65*np.sin(t))) for t in np.linspace(0,2*np.pi,64)]
+        if isinstance(robot,MockRobot): robot.draw(path,'tic-tac-toe O')
+        else: robot.draw(image_path_to_base(path,(900,900),cfg['robot']),'tic-tac-toe O')
+    final=outcome(board)
+    out=ROOT/'out';out.mkdir(exist_ok=True)
+    cv2.imwrite(str(out/'tictactoe_result.png'),render_board(board))
+    print('Board:');print('\n'.join(' | '.join(row) for row in board));print('Winner:',final,'Move:',move)
+    if final=='O': robot.celebrate()
+    robot.home()
+
+def maze(args,robot,cfg):
+    if args.image:
+        img=cv2.imread(args.image,cv2.IMREAD_GRAYSCALE)
+        if img is None:raise ValueError(f'Could not load {args.image}')
+        if args.start is None or args.goal is None:
+            raise ValueError('--start X Y and --goal X Y required for arbitrary maze')
+        start,goal=tuple(args.start),tuple(args.goal)
+    else:
+        img,start,goal=generate_maze(args.seed,args.cells)
+    path=solve_maze(img,start,goal,clearance=cfg['vision']['maze_clearance_px'],
+                    threshold=cfg['vision']['maze_threshold'],stride=cfg['vision']['maze_step_px'])
+    out=ROOT/'out';out.mkdir(exist_ok=True)
+    cv2.imwrite(str(out/'maze_input.png'),img)
+    cv2.imwrite(str(out/'maze_solved.png'),overlay(img,path))
+    print(f'Maze solved: {len(path)} waypoints; start={start}; goal={goal}')
+    if isinstance(robot,MockRobot):robot.draw(path,'maze')
+    else:robot.draw(image_path_to_base(path,img.shape,cfg['robot']),'maze')
+    robot.home()
+
+def main():
+    parser=argparse.ArgumentParser(description='Doosan E0509 camera games (mock-first)')
+    parser.add_argument('--config',default=str(ROOT/'configs/default.yaml'))
+    parser.add_argument('--mode',choices=['mock','real'],default='mock')
+    parser.add_argument('--game',choices=['1','2','3','tictactoe','maze','exit','camera'],default='1')
+    parser.add_argument('--image',help='Photo of game board or maze')
+    parser.add_argument('--card-image',help='Photo of action card for recognition')
+    parser.add_argument('--start',type=int,nargs=2,metavar=('X','Y'))
+    parser.add_argument('--goal',type=int,nargs=2,metavar=('X','Y'))
+    parser.add_argument('--seed',type=int,default=7)
+    parser.add_argument('--cells',type=int,default=8)
+    parser.add_argument('--execute-motion',action='store_true',help='Additional physical motion gate')
+    parser.add_argument('--paper-maze',action='store_true',help='maze/card 2: run chained camera->JSON->CSV->robot pipeline (robot_games.maze_game)')
+    parser.add_argument('--paper-maze-source',choices=['camera','image','demo'],default='camera')
+    args=parser.parse_args();cfg=cfg_load(args.config)
+    game={'1':'tictactoe','2':'maze','3':'exit'}.get(args.game,args.game)
+    if args.card_image:
+        img=cv2.imread(args.card_image)
+        if img is None:raise ValueError('Card image unreadable')
+        game=recognize_card(img)
+        if not game:raise ValueError('Card unrecognized: no action performed')
+        print('Card detected:',game)
+    if game=='camera':
+        cap=cv2.VideoCapture(cfg['camera']['index'])
+        if not cap.isOpened():raise RuntimeError('Cannot open camera')
+        print('Show action card; press SPACE to capture, Q to quit')
+        try:
+            while True:
+                ok,frame=cap.read()
+                if not ok:raise RuntimeError('Camera frame failed')
+                cv2.imshow('Action card (SPACE capture/Q exit)',frame)
+                key=cv2.waitKey(20)&0xff
+                if key==ord('q'):game='exit';break
+                if key==32:
+                    game=recognize_card(frame)
+                    if game:
+                        print('Detected:',game)
+                        # 카메라 모드에서 maze 카드가 인식되면 paper_maze 파이프라인 자동 활성화
+                        if game == 'maze':
+                            args.paper_maze = True
+                        break
+                    print('Card not recognized. Try again.')
+        finally:
+            cap.release();cv2.destroyAllWindows()
+    if game=='maze' and args.paper_maze:      # 카메라 종이 미로: 비전→JSON→CSV→로봇 연속 실행
+        from .maze_game import run as run_paper_maze
+        argv=['--mode',args.mode,'--source',args.paper_maze_source,'--seed',str(args.seed)]
+        if args.execute_motion: argv.append('--execute-motion')
+        if args.image: argv+=['--image',args.image]
+        raise SystemExit(run_paper_maze(argv))
+    if args.mode=='real' and not args.execute_motion:
+        raise PermissionError('Physical mode requires --execute-motion and separate calibrated+armed YAML')
+    robot=MockRobot() if args.mode=='mock' else GuardedDoosan(cfg['robot'])
+    try:
+        if game=='tictactoe':tictactoe(args,robot,cfg)
+        elif game=='maze':maze(args,robot,cfg)
+        elif game=='exit':print('Exit card: safe exit');robot.home()
+        else:raise ValueError('Unknown game, no motion performed')
+    finally:
+        if hasattr(robot,'close'):robot.close()
+
+if __name__=='__main__':main()

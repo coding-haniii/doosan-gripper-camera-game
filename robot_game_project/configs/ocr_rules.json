@@ -1,0 +1,181 @@
+{
+ "meta": {
+  "generated": "2026-11-08 18:07:51",
+  "attempts": {
+   "tictactoe": 53,
+   "maze": 37,
+   "exit": 108
+  },
+  "min_support": 2
+ },
+ "edge_noise": "F",
+ "aliases": {
+  "tictactoe": {
+   "U1": {
+    "weight": 1.0,
+    "support": 4,
+    "src": "log"
+   },
+   "FOX": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "AIS": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "TI": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "116": {
+    "weight": 0.9,
+    "support": 0,
+    "src": "seed"
+   },
+   "1G": {
+    "weight": 0.9,
+    "support": 0,
+    "src": "seed"
+   }
+  },
+  "maze": {
+   "미루": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "MALS": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "니오": {
+    "weight": 0.9,
+    "support": 0,
+    "src": "seed"
+   }
+  },
+  "exit": {
+   "IT": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "L3": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "송료": {
+    "weight": 1.0,
+    "support": 3,
+    "src": "log"
+   },
+   "33": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "CTO": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "TO": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "CAII": {
+    "weight": 1.0,
+    "support": 3,
+    "src": "log"
+   },
+   "EXE": {
+    "weight": 0.83,
+    "support": 2,
+    "src": "log"
+   },
+   "DOIS": {
+    "weight": 1.0,
+    "support": 4,
+    "src": "log"
+   },
+   "승도": {
+    "weight": 0.9,
+    "support": 0,
+    "src": "seed"
+   },
+   "송도": {
+    "weight": 0.9,
+    "support": 0,
+    "src": "seed"
+   }
+  }
+ },
+ "confusions": {
+  "A": {
+   "T": 0.5
+  },
+  "S": {
+   "C": 0.5,
+   "E": 0.5
+  },
+  "루": {
+   "로": 0.5
+  },
+  "L": {
+   "Z": 0.5,
+   "T": 0.5
+  },
+  "송": {
+   "종": 0.6
+  },
+  "F": {
+   "T": 0.5
+  },
+  "1": {
+   "T": 0.5
+  },
+  "I": {
+   "T": 0.5
+  },
+  "G": {
+   "C": 0.5
+  },
+  "3": {
+   "2": 0.5
+  },
+  "4": {
+   "2": 0.5
+  }
+ },
+ "digit_posterior": {
+  "1": {
+   "tictactoe": 0.692,
+   "maze": 0.052,
+   "exit": 0.257
+  },
+  "2": {
+   "tictactoe": 0.091,
+   "maze": 0.696,
+   "exit": 0.213
+  },
+  "3": {
+   "tictactoe": 0.123,
+   "maze": 0.167,
+   "exit": 0.71
+  }
+ },
+ "source_weights": {
+  "kor/label": 0.41,
+  "eng/digit": 0.7,
+  "kor/whole": 0.7,
+  "eng/whole": 0.91,
+  "eng/label": 0.56
+ }
+}

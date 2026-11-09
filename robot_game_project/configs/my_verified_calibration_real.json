@@ -1,0 +1,9 @@
+{
+  "measured_and_verified": false, 
+  "origin_base_mm": null,
+  "x_span_base_mm": null,
+  "y_span_base_mm": null,
+  "pen_contact_z_base_mm": null,
+  "pen_up_z_base_mm": null,
+  "tool_orientation_deg": null
+}
