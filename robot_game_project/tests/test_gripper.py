@@ -61,12 +61,21 @@ def test_drl_waits_after_open_and_retries_until_reply():
 def test_open_checks_position_and_raises_when_not_moved():
     assert _fake([300, 10]).open() == 10                                  # 늦게 열려도 다시 읽어 확인
     with pytest.raises(RuntimeError, match='열리지 않음'):
-        _fake([580, 580, 580]).open()
+        _fake([580] * 3, {**CFG, 'motion_timeout_s': 0.5}).open()
 
 
 def test_close_detects_empty_hand_and_skips_check_without_readback():
-    assert _fake([560]).close() == 560
+    assert _fake([560, 561]).close() == 561
     with pytest.raises(g.PenNotHeld):
-        _fake([618, 619, 619]).close()                                    # 끝까지 닫힘 = 빈 손
-    assert _fake([618]).close(check_held=False) == 618
+        _fake([350, 520, 610, 619, 619]).close()                          # 지나가는 중의 520 은 잡음이 아님 → 멈춘 619 = 빈 손
+    assert _fake([618, 618]).close(check_held=False) == 618
     assert _fake([], {**CFG, 'readback_host': None}).close() is None       # 위치를 못 읽는 설정이면 확인 생략
+
+
+def test_profile_packets_slow_the_gripper():
+    proto = g._Protocol({**CFG, 'registers': {**REG, 'profile_acceleration': 278, 'profile_velocity': 280},
+                         'profile_acceleration': 600, 'profile_velocity': 600})
+    pk = proto.profile()
+    assert [p[:7] for p in pk] == [bytes([1, 0x10, 0x01, 0x16, 0, 2, 4]), bytes([1, 0x10, 0x01, 0x18, 0, 2, 4])]
+    assert pk[0][7:9] == (600).to_bytes(2, 'big')
+    assert g._Protocol(CFG).profile() == []                               # 설정이 없으면 보내지 않음

@@ -173,6 +173,18 @@ class _Protocol:
             return dxl_write(self.id, addr, int(value), 2)
         return modbus_write_single(self.id, addr, int(value))
 
+    def profile(self):
+        """Profile Acceleration / Velocity 패킷 목록(설정·주소가 있는 것만). 값이 작을수록 천천히 움직인다."""
+        out = []
+        for key in ('profile_acceleration', 'profile_velocity'):
+            value, addr = self.cfg.get(key), self.reg.get(key)
+            if value is None or addr is None:
+                continue
+            v = int(value)
+            out.append(dxl_write(self.id, addr, v, 4) if self.kind == 'dynamixel2'
+                       else modbus_write_multiple(self.id, addr, [v & 0xFFFF, (v >> 16) & 0xFFFF]))
+        return out
+
     def goal(self, value: int) -> bytes:
         if self.kind == 'dynamixel2':
             return dxl_write(self.id, self.reg['goal_position'], value, 4)
@@ -192,7 +204,8 @@ class _Protocol:
 
 DEFAULT_REGISTERS = {
     # RH-P12-RN(A) 컨트롤 테이블(Dynamixel 2.0) — 기존 RobotisGripper 와 같은 주소
-    'dynamixel2': {'torque_enable': 512, 'goal_current': 550, 'goal_position': 564, 'present_position': 580},
+    'dynamixel2': {'torque_enable': 512, 'goal_current': 550, 'goal_position': 564, 'present_position': 580,
+                   'profile_acceleration': 556, 'profile_velocity': 560},
     # Modbus 펌웨어는 주소가 다르다(0부터 세는 레지스터 번호 = 4xxxx - 40001). default.yaml 에 입력
     'modbus': {'torque_enable': None, 'goal_current': None, 'goal_position': None, 'present_position': None},
 }
@@ -225,6 +238,7 @@ class FlangeGripper:
         init = [self.proto.torque(True)]
         if self.proto.goal_current() is not None:
             init.append(self.proto.goal_current())
+        init += self.proto.profile()                 # [실기] 켜질 때 기본값은 최고 속도라 잡고 놓을 때 진동 → 늦춤
         self._run(init)
 
     # DRL 코드 생성 --------------------------------------------------------
@@ -255,9 +269,31 @@ class FlangeGripper:
         lines.append('flange_serial_close()')
         return '\n'.join(lines)
 
+    def _start_drl(self, code, timeout_s=5.0, tries=3):
+        """[실기] DSR_ROBOT2.drl_script_run 은 응답을 무한정 기다린다. 연결 직후 첫 요청이 응답 없이 멈춘 일이
+        2026-11-11 세 번 있었다(컨트롤러 쪽에서는 실행 안 됨) → 시간 제한을 두고 다시 요청한다."""
+        import rclpy
+        dr = self.dr
+        client, node = getattr(dr, '_ros2_drl_start', None), getattr(dr, 'g_node', None)
+        if client is None or node is None:                    # 테스트·다른 버전: 원래 함수
+            return dr.drl_script_run(self.system, code) == 0
+        for k in range(tries):
+            req = dr.DrlStart.Request()
+            req.robot_system, req.code = self.system, code
+            fut = client.call_async(req)
+            rclpy.spin_until_future_complete(node, fut, timeout_sec=timeout_s)
+            if fut.done():
+                res = fut.result()
+                return bool(res is not None and res.success)
+            fut.cancel()
+            print(f'[GRIPPER] DRL 시작 응답 없음 ({timeout_s:g}s) → 다시 요청 {k + 2}/{tries}', flush=True)
+            if dr.get_drl_state() == dr.DRL_PROGRAM_STATE_PLAY:  # 응답만 늦고 실행은 된 경우
+                return True
+        return False
+
     def _run(self, packets, read_back=False, host=None, port=None):
         code = self._drl(packets, read_back, host, port)
-        if self.dr.drl_script_run(self.system, code) != 0:
+        if not self._start_drl(code):
             raise RuntimeError('drl_script_run 실패 (로봇이 자동 모드인지, DRL 실행 중인 프로그램이 없는지 확인)')
         t0 = time.time()
         time.sleep(0.2)
@@ -283,24 +319,34 @@ class FlangeGripper:
         self._run([self.proto.goal(int(self.cfg['closed_position']))])
         time.sleep(float(self.cfg.get('settle_s', 0.8)))
         lo, hi = self.cfg.get('holding_min'), self.cfg.get('holding_max')
+        pos = self._wait_settled()                    # 천천히 닫히는 중에는 빈 손이어도 450~605 를 지나가므로 멈춘 뒤 판정
         if not (check_held and lo is not None and hi is not None):
-            return self._wait_position(lambda p: True)
-        pos = self._wait_position(lambda p: lo <= p <= hi)
+            return pos
         if pos is not None and not (lo <= pos <= hi):
             raise PenNotHeld(f'펜 부품을 잡지 못함: 그리퍼 위치 {pos} (허용 {lo}~{hi}, 끝까지 닫히면 빈 손)')
         return pos
 
-    def _wait_position(self, ok, tries=3, interval_s=0.4):
-        """readback_host 가 없으면 None(확인 생략). 있으면 ok(위치)가 될 때까지 몇 번 읽고 마지막 위치를 반환."""
+    def _wait_settled(self, tol=3, interval_s=0.3):
+        """위치가 연속 두 번 tol 이내로 같아질 때(멈춤)까지 읽는다. readback 없으면 None."""
+        prev = None
+        def ok(p):
+            nonlocal prev
+            done = prev is not None and abs(p - prev) <= tol
+            prev = p
+            return done
+        return self._wait_position(ok, interval_s)
+
+    def _wait_position(self, ok, interval_s=0.3):
+        """readback_host 가 없으면 None(확인 생략). 있으면 ok(위치)가 되거나 motion_timeout_s 가 지날 때까지 읽고
+        마지막 위치를 반환. 천천히 움직이게 설정하면 도착까지 몇 초 걸린다."""
         if not self.cfg.get('readback_host'):
             return None
-        pos = None
-        for i in range(tries):
+        deadline = time.time() + float(self.cfg.get('motion_timeout_s', 6.0))
+        while True:
             pos = self.position()
-            if ok(pos):
-                break
+            if ok(pos) or time.time() >= deadline:
+                return pos
             time.sleep(interval_s)
-        return pos
 
     def position(self):
         host = self.cfg.get('readback_host')

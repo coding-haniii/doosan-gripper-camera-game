@@ -286,14 +286,19 @@ def marker_board_corners(frame, ids=None):
     return [list(centers[int(i)]) for i in ids]
 
 
-def detect_markers(frame):
-    """[실기] ArUco(DICT_4X4_50) 마커 중심 {id: (x, y)} 카메라 픽셀. 보드 모서리와 보정 도구(calibrate.py)가 같이 쓴다."""
+def detect_marker_corners(frame):
+    """[실기] ArUco(DICT_4X4_50) 마커 모서리 {id: 4x2 배열} 카메라 픽셀 (마커 기준 TL, TR, BR, BL 순)."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
     det = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), cv2.aruco.DetectorParameters())
     corners, found, _ = det.detectMarkers(gray)
     if found is None:
         return {}
-    return {int(i): tuple(float(v) for v in c.reshape(4, 2).mean(axis=0)) for i, c in zip(found.ravel(), corners)}
+    return {int(i): c.reshape(4, 2).astype(float) for i, c in zip(found.ravel(), corners)}
+
+
+def detect_markers(frame):
+    """[실기] ArUco(DICT_4X4_50) 마커 중심 {id: (x, y)} 카메라 픽셀. 보드 모서리와 보정 도구(calibrate.py)가 같이 쓴다."""
+    return {i: tuple(float(v) for v in c.mean(axis=0)) for i, c in detect_marker_corners(frame).items()}
 
 
 def auto_detect_board_corners(frame):
