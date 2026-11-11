@@ -48,7 +48,8 @@ def _patch_dsr_msgs():
 POS_TOL_MM=3.0; JOINT_TOL_DEG=1.0
 MAX_DRAW_VEL=60.0; MAX_DRAW_ACC=300.0   # [실기] 그리기 속도 상한 (2026-11-11 사용자 요청으로 20→60mm/s)
 SPLINE_MAX_POINTS=100                  # movesx 한 번에 넣는 최대 점 수 (dsr_msgs2 pos_cnt 는 int8)
-MIN_SPLINE_STEP_MM=0.5                 # 이보다 가까운 연속 점은 버린다 (같은 점이 연달아 있으면 스플라인이 거부될 수 있음)
+MIN_SPLINE_STEP_MM=2.0                 # 이보다 가까운 연속 점은 버린다. 1mm 미만 구간이 있으면 컨트롤러가 일정 속도를
+                                       # 포기하고(알람 3213 CONSTANT SPEED IS NOT AVAILABLE) 크게 느려진다(2026-11-11 실측 44초 → 약 9초 기대)
 STOP_STATES={3,5,6,9,10}   # SAFE_OFF, SAFE_STOP, EMERGENCY_STOP, SAFE_STOP2, SAFE_OFF2 (dsr_msgs2 GetRobotState)
 
 class GuardedDoosan:
