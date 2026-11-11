@@ -7,6 +7,7 @@
   camera-robot  펜 끝을 각 마커 중심에 대고 Enter → 로봇 좌표와 카메라 픽셀로 H_camera_to_base 계산
                 → configs/field/camera_robot_calibration.json  (미로 보정은 scripts/make_maze_calibration.py 로 다시 만든다)
   poses         home / celebration / camera_clear(관절) 자세 교시 → configs/field/robot_poses.json
+  holder        펜 거치대: 마커를 찍고 조그로 접근·잡기 자세 교시 → robot_poses.json 의 pen_holder (robot_games.pen_holder)
   gripper       플랜지 그리퍼 시험: --goal N / --torque on|off / --read  (펜 넣고 닫기: --goal 0 → --goal 620)
 
 로봇을 옮기는 방법
@@ -463,6 +464,61 @@ def cmd_poses(a, cfg, input_fn=input):
     return 0
 
 
+# ------------------------------------------------------------------ holder (펜 거치대)
+def cmd_holder(a, cfg, input_fn=input):
+    """거치대 마커를 찍고, 조그로 접근·잡기 자세를 맞춰 마커 기준 상대값으로 저장 (그리퍼는 열기만, 닫지 않음)."""
+    from . import pen_holder as ph
+    from .gripper import FlangeGripper
+    if not (a.jog and a.execute_motion):
+        raise PermissionError('거치대 교시는 --jog --execute-motion 이 필요합니다')
+    marker = ph.capture_holder(cfg)               # 팔이 마커를 가리기 전에 먼저 찍는다
+    print(f'거치대 마커 {ph.holder_marker_id(cfg)}: ({marker[0]:.1f}, {marker[1]:.1f}) {marker[2]:.1f}°')
+    robot = _robot(cfg)
+    try:
+        grip = FlangeGripper(cfg['gripper'])
+        input_fn('그리퍼를 엽니다(펜 부품은 거치대에 꽂혀 있어야 함). Enter > ')
+        grip.open()
+        wait = _positioner(a, cfg, robot, input_fn)
+        taught = {}
+        wait('[approach] 펜 부품 바로 위 6~8cm, 손가락이 부품 양옆에 오도록 방향을 맞춘 곳으로 이동 (방향은 j → "6 각도")')
+        taught['approach'] = _posx(robot)
+        wait('[grasp] 손가락이 회색 부품 양옆을 감싸는 높이까지 천천히 내림 (닫지는 않음)')
+        taught['grasp'] = _posx(robot)
+        held = None
+        if input_fn('그 자리에서 닫아서 잡아 볼까요? 잡은 위치를 확인하고 다시 엽니다 [y/N] > ').strip().lower() == 'y':
+            from .gripper import PenNotHeld
+            try:
+                held = grip.close()
+                print(f'  잡음: 그리퍼 위치 {held} (허용 {grip.cfg.get("holding_min")}~{grip.cfg.get("holding_max")})')
+            except PenNotHeld as e:
+                print(f'  [주의] {e}')
+            grip.open()                                  # 다시 못 열면 예외 → 끌고 올라가지 않고 멈춤
+            print('  다시 열림')
+        from .jog import jog_speed
+        up = list(taught['grasp'])
+        up[2] = max(taught['approach'][2], taught['grasp'][2] + ph.MIN_APPROACH_DZ_MM)
+        robot.move_line(up, ph.SLOW_MM_S, jog_speed(cfg['robot'])[1])   # 부품을 건드리지 않게 수직으로 위로
+        if taught['approach'][2] < taught['grasp'][2] + ph.MIN_APPROACH_DZ_MM:
+            raise ValueError(f'접근 자세는 잡기 자세보다 {ph.MIN_APPROACH_DZ_MM:g}mm 이상 위여야 합니다. 다시 교시하세요')
+        robot.home()
+    finally:
+        robot.close()
+    data = load_poses()
+    data['pen_holder'] = {
+        'marker_id': ph.holder_marker_id(cfg),
+        'marker_at_teach': [round(v, 3) for v in marker],
+        **{n: [round(v, 3) for v in ph.to_marker_frame(taught[n], marker)] for n in ph.POSE_NAMES},
+        'taught_base': taught,
+        'grasp_check_position': held,
+        'verified': False,
+        'updated_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    POSES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    POSES_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
+    print(f'저장: {POSES_PATH} (pen_holder.verified=false → 리허설 확인 후 true 로)')
+    return 0
+
+
 # ------------------------------------------------------------------ gripper
 def cmd_gripper(a, cfg):
     from .gripper import FlangeGripper
@@ -502,9 +558,9 @@ def main(argv=None):
     v = sub.add_parser('view')
     v.add_argument('--camera-index', type=int)
     v.add_argument('--count', type=int, default=5, help='보여야 하는 마커 수')
-    for name in ('camera-robot', 'poses', 'gripper'):
+    for name in ('camera-robot', 'poses', 'holder', 'gripper'):
         sp = sub.add_parser(name)
-        if name in ('camera-robot', 'poses'):
+        if name in ('camera-robot', 'poses', 'holder'):
             sp.add_argument('--jog', action='store_true', help='키보드 스텝 조그로 로봇을 옮김 (직접 교시 대신)')
             sp.add_argument('--execute-motion', action='store_true', help='실기 조그 게이트')
         if name == 'camera-robot':
@@ -526,7 +582,7 @@ def main(argv=None):
     cfg = _cfg(a.config)
     try:
         return {'view': cmd_view, 'camera-robot': cmd_camera_robot, 'poses': cmd_poses,
-                'gripper': cmd_gripper}[a.cmd](a, cfg)
+                'holder': cmd_holder, 'gripper': cmd_gripper}[a.cmd](a, cfg)
     except (RuntimeError, ValueError, PermissionError) as e:
         print(f'[ERROR] {e}', file=sys.stderr)
         return 2

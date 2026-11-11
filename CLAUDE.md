@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **팀원 코드가 기준입니다.** 지금 단계에서는 없는 기능을 새로 만들지 않습니다. 실기에서 꼭 필요하다고 확인된 수정만 팀원 파일 구조 그대로 몇 줄 단위로 넣습니다. 범위를 넓히기 전에 사용자에게 묻습니다.
 - 작업 브랜치는 `jmc`(팀 `dev` 기준)입니다. 예전 개인 저장소 작업(감독 루프, 그리퍼 펜 거치대, 예전 구조 테스트 등)은 `legacy-robot_games-jmc` 브랜치에 보관되어 있습니다. 필요할 때 거기서 가져옵니다.
-- 실기 확인(2026-11-11): **미로**(`maze_game`)와 **틱택토**(`app --game 1`, 로봇이 X를 종이에 그림) 각각 처음부터 끝까지 동작. 카드 인식(`app --game camera`)은 mock으로 TIC·미로·STOP 세 장 모두 확인했고(카드는 카메라에 가까이 대서 찍음), 카드로 묶은 실기 실행이 남았습니다. 카드 루프는 아직 보류입니다.
+- 실기 확인(2026-11-11): **미로**(`maze_game`)와 **틱택토**(`app --game 1`, 로봇이 X를 종이에 그림) 각각 처음부터 끝까지 동작. 카드 인식(`app --game camera`)은 mock으로 TIC·미로·STOP 세 장 모두 확인했고(카드는 카메라에 가까이 대서 찍음), 카드로 묶은 실기 실행이 남았습니다. 카드 루프는 아직 보류입니다. 펜 거치대 비전 Pick(`robot_games.pen_holder`, 마커 25번으로 거치대를 찾아 펜 부품 집기·반납)은 단독으로 실기 확인했고, 게임 앞뒤에 붙이는 것은 아직 정하지 않았습니다.
 - 설비 값, 보정, 실기 절차와 함정은 [robot_game_project/docs/REAL_CELL.md](robot_game_project/docs/REAL_CELL.md)에 있습니다.
 
 ## 명령어 (`robot_game_project/`에서)

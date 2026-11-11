@@ -10,6 +10,7 @@ vision:
   maze_step_px: 8
   # [실기] 보드 모서리로 쓰는 ArUco 마커 id (카메라 화면 기준 TL, TR, BR, BL). 로봇 좌표는 2026-11-10 펜 끝으로 실측
   board_marker_ids: [1, 3, 2, 0]
+  holder_marker_id: 25        # [실기] 펜 거치대(컵) 옆 마커. robot_games.pen_holder 가 이 마커로 거치대 위치를 찾음
 robot:
   namespace: dsr01
   model: e0509
@@ -50,7 +51,12 @@ gripper:
     goal_current: 275         # 40276
     goal_position: 282        # 40283 (FC16 2레지스터 [값, 0])
     present_position: 290     # [실기] 2026-11-11 읽기로 확인 (목표 위치와 같은 값이 나옴)
+    profile_acceleration: 278 # 40279 (FC16 2레지스터). 켜질 때 3447(최대)
+    profile_velocity: 280     # 40281 (FC16 2레지스터). 켜질 때 2970(최대)
   goal_current: 400
+  profile_acceleration: 600   # [실기] 잡고 놓을 때 진동 줄이기 (최대의 약 20%). 클수록 빠름
+  profile_velocity: 600
+  motion_timeout_s: 6.0       # 열기·닫기 후 위치 확인을 기다리는 최대 시간
   open_position: 0
   closed_position: 620
   holding_min: 450            # [실기] 회색 펜 부품을 물면 520~580 (2026-11-11 읽음). 이 범위 밖이면 못 잡은 것
