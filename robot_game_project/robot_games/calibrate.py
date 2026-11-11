@@ -1,18 +1,18 @@
-"""보정·교시 도구.  robot-calibrate <명령> [--mode real|emulator]
+"""보정·교시 도구.  python -m robot_games.calibrate <명령>   (결과는 configs/field/)
 
   markers       ArUco 마커 생성 (out/markers/). markers_A4.pdf(.png) 를 100% 로 인쇄해 잘라서
                 종이 보드 네 모서리 바깥(0~3)과 한 변 가운데 바깥(4)에 붙인다. 마커는 실행 중에도
                 모두 보여야 하므로 종이 밑에 두면 안 된다. --size-mm 로 한 변 크기(기본 50mm).
   view          웹캠 화면에 인식된 마커를 표시 (로봇 연결 없음). 마커를 붙이거나 카메라 위치를 잡을 때 쓴다.
   camera-robot  펜 끝을 각 마커 중심에 대고 Enter → 로봇 좌표와 카메라 픽셀로 H_camera_to_base 계산
-                → configs/camera_robot_calibration.json
-  poses         home / celebration / camera_clear(관절) 과 (펜을 거치대에서 집는 구성이면) 거치대 자세 교시
-                → configs/robot_poses.json
-  gripper       그리퍼 통신 시험: --read / --goal N / --torque on|off
+                → configs/field/camera_robot_calibration.json  (미로 보정은 scripts/make_maze_calibration.py 로 다시 만든다)
+  poses         home / celebration / camera_clear(관절) 자세 교시 → configs/field/robot_poses.json
+  gripper       플랜지 그리퍼 시험: --goal N / --torque on|off / --read  (펜 넣고 닫기: --goal 0 → --goal 620)
 
 로봇을 옮기는 방법
-  --jog  : 이 도구의 키보드 스텝 조그(jog.py). 이 로봇(E0509, 펜던트·콕핏 없음)은 직접 교시가 안 되므로 이 방식을 쓴다.
-           실기에서는 --execute-motion 과 default.yaml 의 robot.armed=true 가 필요하다.
+  --jog  : 키보드 스텝 조그(jog.py). 이 로봇(E0509, 펜던트·콕핏 없음)은 직접 교시가 안 되므로 이 방식을 쓴다.
+           --execute-motion 과 default.yaml 의 robot.armed=true 가 필요하다.
+로봇 연결은 팀원 motion.GuardedDoosan(for_calibration=True)을 쓴다 (실제 컨트롤러만, armed 필요).
   (없음) : 위치를 읽기만 한다. 운영자가 다른 수단(DART 조그 등)으로 옮긴 뒤 Enter.
 결과 파일은 항상 measured_and_verified=false 로 저장된다. 확인 후 사람이 직접 true 로 바꾼다.
 """
@@ -28,12 +28,15 @@ import cv2
 import numpy as np
 import yaml
 
-from .camera import open_camera
-from .motion import MotionFailed
-from .pen_plan import ARUCO_DICT, CAMERA_CALIB_PATH, detect_markers, draw_markers, fit_plane
-from .poses import CART_KEYS, JOINT_KEYS, load_poses, save_poses
+from .camera_select import choose_camera
+from .paper_maze import detect_markers
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
+FIELD = ROOT / 'configs' / 'field'
+CAMERA_CALIB_PATH = FIELD / 'camera_robot_calibration.json'
+POSES_PATH = FIELD / 'robot_poses.json'
+JOINT_KEYS = ('home', 'celebration', 'camera_clear')
+ARUCO_DICT = cv2.aruco.DICT_4X4_50
 PEN_UP_CLEARANCE_MM = 30.0
 WARN_ERR_MM = 2.0
 MAX_ERR_MM = 5.0
@@ -44,28 +47,61 @@ def _cfg(path=None):
     return yaml.safe_load(Path(path or ROOT / 'configs' / 'default.yaml').read_text(encoding='utf-8'))
 
 
-def _session(cfg, mode):
-    from .motion import ROBOT_SYSTEM_REAL, ROBOT_SYSTEM_VIRTUAL, _DsrSession
-    return _DsrSession(cfg['robot'], ROBOT_SYSTEM_REAL if mode == 'real' else ROBOT_SYSTEM_VIRTUAL)
+def _robot(cfg):
+    """팀원 GuardedDoosan 으로 실제 컨트롤러에 연결 (보정 전이라 calibration_confirmed·home 은 요구하지 않음)."""
+    from .motion import GuardedDoosan
+    return GuardedDoosan(cfg['robot'], need_celebration=False, for_calibration=True)
 
 
-def _jog_panel(a, cfg, s, input_fn):
+def _open_camera(cfg, index=None):
+    cam = cfg.get('camera') or {}
+    cap = cv2.VideoCapture(choose_camera(int(cam.get('index', 0))) if index is None else index)
+    for key, prop in (('width', cv2.CAP_PROP_FRAME_WIDTH), ('height', cv2.CAP_PROP_FRAME_HEIGHT)):
+        if cam.get(key):
+            cap.set(prop, cam[key])
+    if not cap.isOpened():
+        raise RuntimeError('카메라를 열 수 없음')
+    for _ in range(10):
+        cap.read()
+    return cap
+
+
+def load_poses(path=None) -> dict:
+    p = Path(path or POSES_PATH)
+    if not p.exists():
+        return {}
+    data = json.loads(p.read_text(encoding='utf-8'))
+    for k in JOINT_KEYS:
+        if data.get(k) is not None and len(data[k]) != 6:
+            raise ValueError(f'{p.name}: {k} 는 값 6개여야 합니다 ({data[k]!r})')
+    return data
+
+
+def fit_plane(points):
+    """[(x, y, z), ...] → z = a·x + b·y + c 의 (a, b, c). 점이 3개 미만이면 평균 높이의 수평면."""
+    pts = np.asarray(points, float)
+    if len(pts) < 3:
+        return (0.0, 0.0, float(pts[:, 2].mean()))
+    A = np.c_[pts[:, 0], pts[:, 1], np.ones(len(pts))]
+    a, b, c = np.linalg.lstsq(A, pts[:, 2], rcond=None)[0]
+    return (float(a), float(b), float(c))
+
+
+def _jog_panel(a, cfg, robot, input_fn):
     """--jog 면 키보드 스텝 조그 패널, 아니면 None (위치만 읽는 모드)."""
     if not getattr(a, 'jog', False):
         return None
-    rc = cfg['robot']
-    if a.mode == 'real' and not (a.execute_motion and rc.get('armed')):
-        raise PermissionError('실기 조그는 --execute-motion 과 default.yaml 의 robot.armed=true 가 필요합니다')
+    if not a.execute_motion:
+        raise PermissionError('조그는 --execute-motion 이 필요합니다 (default.yaml 의 robot.armed=true 도 필요)')
     from .jog import JogPanel
-    from .motion import _DoosanRobot
-    panel = JogPanel(_DoosanRobot(s, rc, poses=load_poses()), min_z=rc.get('min_pen_z_base_mm'), input_fn=input_fn)
+    panel = JogPanel(robot, min_z=cfg['robot'].get('min_pen_z_base_mm'), input_fn=input_fn)
     panel.check_frames()
     return panel
 
 
-def _positioner(a, cfg, s, input_fn):
+def _positioner(a, cfg, robot, input_fn):
     """wait(prompt): 운영자가 로봇을 원하는 위치에 둘 때까지 기다린다. --jog 면 키보드 스텝 조그."""
-    panel = _jog_panel(a, cfg, s, input_fn)
+    panel = _jog_panel(a, cfg, robot, input_fn)
     if panel is None:
         return lambda prompt: input_fn(prompt + ' 후 Enter > ')
     return panel.position
@@ -105,54 +141,43 @@ def predict_marker_xy(mid, pixel_of, touched, hints):
 def _approach(robot, xy, rc):
     """현재 위치에서 이동 높이(clear)로 수직 이동 → 마커 위로 수평 이동 → hover 높이까지 천천히 하강.
     높은 곳(예: camera_clear 의 20cm)에서는 팔이 먼 마커까지 닿지 않으므로 먼저 clear 높이로 내려온다."""
-    p = _posx(robot.dr)
+    from .jog import jog_speed
+    p = robot.current_posx()
     floor = float(rc.get('min_pen_z_base_mm') or 40.0)
     hover, clear = floor + HOVER_MM, floor + HOVER_MM + CLEAR_MM
-    fast = rc.get('jog_speed_mm_s', 100)
-    try:
-        rc['jog_speed_mm_s'] = min(100.0, float(fast))
-        if abs(p[2] - clear) > 1.0:
-            robot.move_line([p[0], p[1], clear, *p[3:6]], 'to clear height', jog=True)
-        rc['jog_speed_mm_s'] = fast
-        robot.move_line([xy[0], xy[1], clear, *p[3:6]], 'to marker', jog=True)
-        rc['jog_speed_mm_s'] = min(100.0, float(fast))
-        robot.move_line([xy[0], xy[1], hover, *p[3:6]], 'hover', jog=True)
-    finally:
-        rc['jog_speed_mm_s'] = fast
+    fast, acc = jog_speed(rc)
+    slow = min(100.0, fast)                          # 테이블 쪽으로 오르내릴 때는 천천히
+    if abs(p[2] - clear) > 1.0:
+        robot.move_line([p[0], p[1], clear, *p[3:6]], slow, acc)
+    robot.move_line([xy[0], xy[1], clear, *p[3:6]], fast, acc)
+    robot.move_line([xy[0], xy[1], hover, *p[3:6]], slow, acc)
 
 
 def _to_camera_clear(robot, rc):
     """camera_clear 의 직교 위치까지 직선으로 올라가며 이동한 뒤 관절 자세를 맞춘다.
     (낮은 곳에서 바로 관절 이동을 하면 도중에 펜 끝이 테이블 쪽으로 내려갈 수 있음)"""
-    dr = robot.dr
+    from .jog import jog_speed
     q = load_poses()['camera_clear']
-    f = dr.fkin(dr.posj(*map(float, q)))
-    target = [float(v) for v in (f[0] if isinstance(f, tuple) else f)]
-    robot.move_line(target, 'to camera_clear', jog=True)
-    robot.goto('camera_clear')
+    robot.move_line(robot.fkin(q), *jog_speed(rc))
+    robot.move_joint(q)
 
 
 def _lift(robot, rc):
-    p = _posx(robot.dr)
+    from .jog import jog_speed
+    p = robot.current_posx()
     floor = float(rc.get('min_pen_z_base_mm') or 40.0)
     clear = floor + HOVER_MM + CLEAR_MM
     if p[2] < clear:
-        fast = rc.get('jog_speed_mm_s', 100)
-        try:
-            rc['jog_speed_mm_s'] = min(100.0, float(fast))
-            robot.move_line([p[0], p[1], clear, *p[3:6]], 'lift', jog=True)
-        finally:
-            rc['jog_speed_mm_s'] = fast
+        fast, acc = jog_speed(rc)
+        robot.move_line([p[0], p[1], clear, *p[3:6]], min(100.0, fast), acc)
 
 
-def _posx(dr):
-    p = dr.get_current_posx()
-    p = p[0] if isinstance(p, tuple) else p
-    return [round(float(v), 3) for v in p]
+def _posx(robot):
+    return [round(v, 3) for v in robot.current_posx()]
 
 
-def _posj(dr):
-    return [round(float(v), 3) for v in dr.get_current_posj()]
+def _posj(robot):
+    return [round(v, 3) for v in robot.current_posj()]
 
 
 # ------------------------------------------------------------------ markers
@@ -252,8 +277,27 @@ def cmd_markers(a):
 
 
 # ------------------------------------------------------------------ view
+def draw_markers(view, expected=5):
+    """화면(view)에 인식된 마커 중심·번호와 작업 영역 선을 겹쳐 그린다(제자리 수정). 반환: 인식된 id 목록.
+    초록 = expected 개가 모두 보임, 빨강 = 빠진 마커 있음. 선 안쪽이 그릴 수 있는 영역."""
+    seen = detect_markers(view)
+    ok = len(seen) >= expected
+    color = (0, 200, 0) if ok else (0, 0, 255)
+    if len(seen) >= 3:
+        hull = cv2.convexHull(np.float32(list(seen.values()))).astype(np.int32)
+        cv2.polylines(view, [hull], True, color, 1)
+    for mid, (x, y) in seen.items():
+        cv2.circle(view, (int(x), int(y)), 6, color, -1)
+        cv2.putText(view, str(mid), (int(x) + 10, int(y) - 10), cv2.FONT_HERSHEY_SIMPLEX, .8, color, 2)
+    missing = [i for i in range(expected) if i not in seen]
+    text = f'markers {len(seen)}/{expected}' + ('' if ok else f' missing {missing}')
+    (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, .7, 2)
+    cv2.putText(view, text, (view.shape[1] - tw - 12, 28), cv2.FONT_HERSHEY_SIMPLEX, .7, color, 2)
+    return sorted(seen)
+
+
 def annotate_markers(frame, expected=5):
-    """마커 표시를 그린 화면과 인식된 id 목록. (게임 화면과 같은 pen_plan.draw_markers 를 쓴다)"""
+    """마커 표시를 그린 화면과 인식된 id 목록."""
     view = frame.copy()
     ids = draw_markers(view, expected)
     cv2.putText(view, 'Q: quit  S: save snapshot', (12, view.shape[0] - 14), cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 200, 0), 2)
@@ -261,7 +305,7 @@ def annotate_markers(frame, expected=5):
 
 
 def cmd_view(a, cfg):
-    cap = open_camera(cfg.get('camera'), a.camera_index)
+    cap = _open_camera(cfg, a.camera_index)
     print('초록 = 마커가 모두 보임, 빨강 = 빠진 마커 있음. 선 안쪽이 그릴 수 있는 영역입니다. Q 종료, S 저장')
     title = 'Markers (Q quit / S save)'
     last = None
@@ -312,7 +356,7 @@ def solve_homography(pixels, base_xy):
 
 
 def cmd_camera_robot(a, cfg, input_fn=input):
-    cap = open_camera(cfg.get('camera'), a.camera_index)
+    cap = _open_camera(cfg, a.camera_index)
     seen, frame = _average_markers(cap)
     ids = sorted(seen)
     print(f'보이는 마커: {ids}')
@@ -320,11 +364,9 @@ def cmd_camera_robot(a, cfg, input_fn=input):
         raise RuntimeError('마커가 4개 이상 보여야 합니다 (robot-calibrate markers 로 인쇄)')
     if len(ids) == 4:
         print('[주의] 마커 4개로는 보정 오차를 검증할 수 없습니다. 한 변 가운데 바깥에 5번째 마커를 권장합니다.')
-    s = _session(cfg, a.mode)
+    robot = _robot(cfg)                  # 펜 끝 TCP(pen_tip)는 DART 에서 활성화되어 있어야 한다
     try:
-        if cfg['robot'].get('pen_tcp_name'):
-            s.dr.set_tcp(cfg['robot']['pen_tcp_name'])   # 펜 끝 좌표를 읽어야 하므로 펜 TCP
-        panel = _jog_panel(a, cfg, s, input_fn)
+        panel = _jog_panel(a, cfg, robot, input_fn)
         hints = load_hints() if panel else {}
         if panel and hints:
             print(f'마커 위치 힌트 {sorted(hints)} → 각 마커 위 {HOVER_MM:g}mm 까지 자동으로 갑니다. 거기서 1mm 단위로 맞추세요.')
@@ -337,25 +379,27 @@ def cmd_camera_robot(a, cfg, input_fn=input):
                 guess = predict_marker_xy(mid, seen, touched, hints)
                 if guess is not None:
                     try:
-                        _approach(panel.robot, guess, cfg['robot'])
-                    except MotionFailed as e:
+                        _approach(robot, guess, cfg['robot'])
+                    except (RuntimeError, ValueError) as e:
+                        if robot.stopped():
+                            raise
                         print(f'  [자동 접근 실패] {e} → 직접 조그로 옮기세요')
                     panel.step = 1.0
                 panel.position(prompt)
-            pts.append(_posx(s.dr))
+            pts.append(_posx(robot))
             touched[mid] = pts[-1][:2]
             print(f'  마커 {mid}: 픽셀 {tuple(round(v, 1) for v in seen[mid])}  로봇 {pts[-1][:3]}')
             if panel is not None:
-                _lift(panel.robot, cfg['robot'])
+                _lift(robot, cfg['robot'])
         if panel is not None and load_poses().get('camera_clear'):
             print('카메라 비킴 자세(camera_clear)로 이동 → 마커 위치 재확인')
-            _to_camera_clear(panel.robot, cfg['robot'])
+            _to_camera_clear(robot, cfg['robot'])
         else:
             input_fn('로봇을 카메라 시야 밖으로 옮긴 뒤 Enter (마커 위치 재확인용; 먼저 위로 들기) > ')
         seen2, frame = _average_markers(cap)
     finally:
         cap.release()
-        s.close()
+        robot.close()
     missing = [m for m in ids if m not in seen2]
     if missing:
         raise RuntimeError(f'재확인 때 마커 {missing} 가 안 보임')
@@ -374,7 +418,6 @@ def cmd_camera_robot(a, cfg, input_fn=input):
     cal = {
         'measured_and_verified': False,
         'created_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'mode': a.mode,
         'H_camera_to_base': H.tolist(),
         'markers': [{'id': m, 'pixel': [round(v, 2) for v in px], 'base_xy': p[:2], 'base_z': p[2]}
                     for m, px, p in zip(ids, pixels, pts)],
@@ -384,7 +427,6 @@ def cmd_camera_robot(a, cfg, input_fn=input):
         'pen_up_z_base_mm': round(float(zs.max()) + PEN_UP_CLEARANCE_MM, 3),
         'tool_orientation_deg': pts[0][3:6],
         'max_error_mm': round(float(err.max()), 3),
-        'pen_tcp_name': cfg['robot'].get('pen_tcp_name'),
     }
     out = Path(a.out or CAMERA_CALIB_PATH)
     out.write_text(json.dumps(cal, indent=2, ensure_ascii=False), encoding='utf-8')
@@ -395,56 +437,47 @@ def cmd_camera_robot(a, cfg, input_fn=input):
 
 # ------------------------------------------------------------------ poses
 POSE_HELP = {
-    'home': '홈(대기) 자세',
+    'home': '홈(대기) 자세 — default.yaml 의 robot.home_joints_deg 에도 넣어야 게임이 쓴다',
     'celebration': '이겼을 때 세리머니 자세',
     'camera_clear': '카메라 시야를 가리지 않는 대기 자세',
-    'pen_holder_approach': '펜 거치대 바로 위 (펜 축과 같은 방향, 그리퍼 열림)',
-    'pen_holder_grasp': '펜을 잡는 높이 (그리퍼 손가락이 펜을 감싸는 위치)',
 }
 
 
 def cmd_poses(a, cfg, input_fn=input):
-    # 펜을 미리 물려 둔 구성(pen_preloaded)이면 거치대 자세는 필요 없다
-    default = JOINT_KEYS if cfg['robot'].get('pen_preloaded') else JOINT_KEYS + CART_KEYS
-    names = a.only or list(default)
+    names = a.only or list(JOINT_KEYS)
     data = load_poses()
-    s = _session(cfg, a.mode)
+    robot = _robot(cfg)
     try:
-        wait = _positioner(a, cfg, s, input_fn)
+        wait = _positioner(a, cfg, robot, input_fn)
         for n in names:
-            if n in CART_KEYS and cfg['robot'].get('gripper_tcp_name'):
-                s.dr.set_tcp(cfg['robot']['gripper_tcp_name'])
             wait(f'[{n}] {POSE_HELP[n]} 으로 이동')
-            data[n] = _posj(s.dr) if n in JOINT_KEYS else _posx(s.dr)
+            data[n] = _posj(robot)
             print(f'  {n} = {data[n]}')
     finally:
-        s.close()
+        robot.close()
     data['measured_and_verified'] = False
     data['updated_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
-    print(f'저장: {save_poses(data)}')
+    POSES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    POSES_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
+    print(f'저장: {POSES_PATH}')
     return 0
 
 
 # ------------------------------------------------------------------ gripper
 def cmd_gripper(a, cfg):
-    from .gripper import FlangeGripper, UsbGripper
+    from .gripper import FlangeGripper
     gcfg = dict(cfg['gripper'])
+    if gcfg.get('backend', 'flange') != 'flange':
+        raise ValueError('이 명령은 플랜지 그리퍼(gripper.backend: flange)용입니다. USB 어댑터는 gripper.RobotisGripper 를 쓰세요')
     # 시험용: 열림/닫힘 값이 아직 없으면 0 으로 두고, --goal 로 임의 위치를 보낸다
     for k in ('open_position', 'closed_position'):
         if gcfg.get(k) is None:
             gcfg[k] = 0
-    s = None
+    robot = _robot(cfg)
     try:
-        if gcfg.get('backend', 'flange') == 'usb':
-            grip = UsbGripper(gcfg)
-        else:
-            s = _session(cfg, a.mode)
-            grip = FlangeGripper(s, gcfg)
+        grip = FlangeGripper(gcfg)
         if a.torque:
-            if isinstance(grip, FlangeGripper):
-                grip._run([grip.proto.torque(a.torque == 'on')])
-            else:
-                grip._write(grip.reg['torque_enable'], int(a.torque == 'on'), 1)
+            grip._run([grip.proto.torque(a.torque == 'on')])
             print(f'torque {a.torque}')
         if a.goal is not None:
             gcfg['open_position'] = a.goal
@@ -454,8 +487,7 @@ def cmd_gripper(a, cfg):
         if a.read:
             print(f'현재 위치: {grip.position()}')
     finally:
-        if s is not None:
-            s.close()
+        robot.close()
     return 0
 
 
@@ -472,7 +504,6 @@ def main(argv=None):
     v.add_argument('--count', type=int, default=5, help='보여야 하는 마커 수')
     for name in ('camera-robot', 'poses', 'gripper'):
         sp = sub.add_parser(name)
-        sp.add_argument('--mode', choices=['real', 'emulator'], default='real')
         if name in ('camera-robot', 'poses'):
             sp.add_argument('--jog', action='store_true', help='키보드 스텝 조그로 로봇을 옮김 (직접 교시 대신)')
             sp.add_argument('--execute-motion', action='store_true', help='실기 조그 게이트')
@@ -480,7 +511,7 @@ def main(argv=None):
             sp.add_argument('--camera-index', type=int)
             sp.add_argument('--out')
         if name == 'poses':
-            sp.add_argument('--only', nargs='+', choices=list(JOINT_KEYS + CART_KEYS))
+            sp.add_argument('--only', nargs='+', choices=list(JOINT_KEYS))
         if name == 'gripper':
             sp.add_argument('--read', action='store_true')
             sp.add_argument('--goal', type=int)
