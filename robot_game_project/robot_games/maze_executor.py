@@ -62,10 +62,11 @@ def validate_real(rows, meta, csv_path, max_points):
         raise ExecutionRefused("x,y,z,rx,ry,rz 중 빈 값 있음 (tool_orientation 누락?)")
     downs = {r["z"] for r in rows if r["pen"] == "down"}
     ups = {r["z"] for r in rows if r["pen"] == "up"}
-    if len(downs) != 1 or len(ups) != 1:
-        raise ExecutionRefused("펜 내림/올림 Z 가 각각 하나의 값이 아님")
-    if min(ups) <= max(downs):
-        raise ExecutionRefused("펜 올림 Z 가 내림 Z 보다 높지 않음")
+    # [실기] 테이블 기울기 보정(pen_contact_plane)으로 펜 내림 Z 가 위치마다 조금씩 다를 수 있다
+    if len(ups) != 1 or max(downs) - min(downs) > 10.0:
+        raise ExecutionRefused("펜 올림 Z 가 하나의 값이 아니거나 펜 내림 Z 차이가 10mm 를 넘음")
+    if min(ups) < max(downs) + 5.0:
+        raise ExecutionRefused("펜 올림 Z 가 내림 Z 보다 5mm 이상 높지 않음")
     for r in rows:
         if math.hypot(r["x"], r["y"]) > MAX_REACH_XY_MM:
             raise ExecutionRefused(f"step {r['step']}: 도달 범위 밖 (r={math.hypot(r['x'], r['y']):.0f}mm)")
@@ -141,7 +142,11 @@ def execute(csv_path, mode="mock", execute_motion=False, yes=False, cfg_path=Non
         raise
     finally:
         try:
-            robot.home()
+            # [실기] 보호정지·비상정지 상태면 자동으로 움직이지 않는다 (운영자가 리셋 후 복귀)
+            if hasattr(robot, "stopped") and robot.stopped():
+                print("[REAL] 로봇 정지 상태 → 홈 복귀 생략", file=sys.stderr)
+            else:
+                robot.home()
         finally:
             if own and hasattr(robot, "close"):
                 robot.close()

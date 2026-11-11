@@ -26,14 +26,15 @@ def run(argv=None) -> int:
     p.add_argument("--handoff", action="store_true", help="CSV 만 만들고 종료(로봇 감시 프로세스가 자동 실행)")
     p.add_argument("--config")
     p.add_argument("--source", choices=["camera", "image", "demo"], default="camera")
-    p.add_argument("--camera-index", type=int, default=0)
+    p.add_argument("--camera-index", type=int, default=None, help="생략하면 RealSense 컬러 카메라를 자동으로 찾음")
     p.add_argument("--image")
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--start", type=int, nargs=2)
     p.add_argument("--goal", type=int, nargs=2)
     p.add_argument("--invert", action="store_true")
     p.add_argument("--threshold", type=int, default=160)
-    p.add_argument("--clearance", type=int, default=2)
+    p.add_argument("--clearance", type=int, default=None,
+                   help="벽에서 떨어질 픽셀. 생략하면 paper_maze 가 통로 가운데로 자동 (주면 그 값으로 고정)")
     a = p.parse_args(argv)
 
     if a.mode == "real" and not a.execute_motion and not a.handoff:
@@ -53,8 +54,10 @@ def run(argv=None) -> int:
     # ---------- (1) 비전: 미로 풀이 + JSON ----------
     print("=== (1/3) 비전: 미로 인식·풀이 ===")
     t0 = time.time() - 1.0
-    argv1 = ["--source", a.source, "--camera-index", str(a.camera_index), "--seed", str(a.seed),
-             "--threshold", str(a.threshold), "--clearance", str(a.clearance), "--robot-mode", "mock"]
+    argv1 = ["--source", a.source, "--seed", str(a.seed),
+             "--threshold", str(a.threshold), "--robot-mode", "mock"]
+    if a.clearance is not None: argv1 += ["--clearance", str(a.clearance)]   # [실기] 기본은 통로 가운데 자동(solve_centered)
+    if a.camera_index is not None: argv1 += ["--camera-index", str(a.camera_index)]
     if a.image: argv1 += ["--image", a.image]
     if a.start: argv1 += ["--start", *map(str, a.start)]
     if a.goal: argv1 += ["--goal", *map(str, a.goal)]
