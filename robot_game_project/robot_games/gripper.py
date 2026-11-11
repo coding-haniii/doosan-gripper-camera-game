@@ -225,7 +225,9 @@ class FlangeGripper:
     # DRL 코드 생성 --------------------------------------------------------
     def _drl(self, packets, read_back=False, host=None, port=None):
         lines = [f'flange_serial_open(baudrate={self.baud}, bytesize=DR_EIGHTBITS, '
-                 f'parity=DR_PARITY_NONE, stopbits=DR_STOPBITS_ONE)']
+                 f'parity=DR_PARITY_NONE, stopbits=DR_STOPBITS_ONE)',
+                 # [실기] 열자마자 쓰면 첫 패킷이 버려진다(2026-11-11 실측: 응답 없음 → 0.1초 뒤 쓰면 매번 응답)
+                 'res0, rx0 = flange_serial_read(0.1)']
         for k, p in enumerate(packets):
             lines.append(f'flange_serial_write({p!r})')
             if not (read_back and k == len(packets) - 1):
