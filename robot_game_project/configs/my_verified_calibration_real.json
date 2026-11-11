@@ -1,6 +1,6 @@
 {
   "_note": "robot_game_project 실측 보정 (2026-11-11). 보드 = ArUco 마커 1,3,2,0 중심(TL,TR,BR,BL), 로봇 좌표는 2026-11-10 펜 끝 터치 실측. 마커를 움직이면 다시 재야 함",
-  "measured_and_verified": false,
+  "measured_and_verified": true,
   "origin_base_mm": [
     449.898,
     -150.015,
