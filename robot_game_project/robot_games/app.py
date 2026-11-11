@@ -65,7 +65,8 @@ def main():
         if not game:raise ValueError('Card unrecognized: no action performed (out/debug/ 의 이미지와 [card] 로그를 확인하세요)')
         print('Card detected:',game)
     if game=='camera':
-        cap=cv2.VideoCapture(cfg['camera']['index'])
+        from .camera_select import choose_camera   # [실기] RealSense 컬러를 자동으로 (설정 index 는 fallback)
+        cap=cv2.VideoCapture(choose_camera(int(cfg['camera'].get('index',0))))
         if not cap.isOpened():raise RuntimeError('Cannot open camera')
         cam=cfg.get('camera',{})
         if cam.get('width'):cap.set(cv2.CAP_PROP_FRAME_WIDTH,cam['width'])
