@@ -7,7 +7,7 @@
 | 항목 | 값 |
 |---|---|
 | 로봇 | 두산 E0509, 컨트롤러 V2.10.3 (GV02100300), IP **110.120.1.52** |
-| 티치펜던트·콕핏 | **없음 → 직접 교시(손으로 끌기) 불가.** 설정은 윈도우 DART-Platform으로 합니다([WINDOWS_DART_SETUP.md](WINDOWS_DART_SETUP.md)). 위치 맞추기는 키보드 조그(`robot_games.calib`)로 합니다 |
+| 티치펜던트·콕핏 | **없음 → 직접 교시(손으로 끌기) 불가.** 설정은 윈도우 DART-Platform으로 합니다([WINDOWS_DART_SETUP.md](WINDOWS_DART_SETUP.md)). 위치 맞추기는 키보드 조그(`robot_games.calibrate --jog`)로 합니다 |
 | TCP | `pen_tip`(플랜지→펜 끝 0,0,180mm), `gripper_tip`(0,0,85). DART에서 등록·활성화됨. 코드는 TCP를 바꾸지 않습니다 |
 | 그리퍼 | RH-P12-RN(A), 두산 플랜지 시리얼, Modbus RTU ID 1. 열림 0, 닫힘 620. 펜은 **미리 물려 둡니다**(게임 중에는 그리퍼를 건드리지 않음) |
 | 카메라 | Intel RealSense D455f 컬러, 테이블 위 고정. **USB 3 포트**에 꽂아야 안정적입니다. 노드 번호는 PC마다 달라서 `camera_select`가 실행할 때마다 찾습니다. 1280×720 사용(테이블 위 1px ≈ 1mm) |
@@ -41,8 +41,8 @@ cd robot_game_project
 ## 다시 보정해야 할 때 (마커나 카메라를 옮긴 경우)
 
 ```bash
-.venv/bin/python -m robot_games.calib.calibrate view                                  # 마커 5/5 보이는지
-.venv/bin/python -m robot_games.calib.calibrate camera-robot --jog --execute-motion   # 펜 끝을 마커 중심에 대기
+.venv/bin/python -m robot_games.calibrate view                                  # 마커 5/5 보이는지
+.venv/bin/python -m robot_games.calibrate camera-robot --jog --execute-motion   # 펜 끝을 마커 중심에 대기
 .venv/bin/python scripts/make_maze_calibration.py                                     # 미로 보정 다시 만들기
 .venv/bin/python scripts/preview_maze_path.py                                         # 경로 확인
 ```

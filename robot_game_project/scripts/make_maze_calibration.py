@@ -1,6 +1,6 @@
 """보드 마커 4장(TL,TR,BR,BL)의 실측 로봇 좌표로 미로 실측 보정(configs/my_verified_calibration_real.json)을 만든다.
 
-마커를 옮겼거나 robot_games.calib.calibrate camera-robot 으로 다시 보정했을 때 실행한다. 로봇은 움직이지 않는다.
+마커를 옮겼거나 robot_games.calibrate camera-robot 으로 다시 보정했을 때 실행한다. 로봇은 움직이지 않는다.
 결과는 measured_and_verified=false 로 저장되므로, 경로 미리보기로 확인한 뒤 직접 true 로 바꾼다.
   python scripts/make_maze_calibration.py   (기본 경로 사용)
 """
@@ -15,6 +15,7 @@ out_json = Path(_args[2] or proj / 'configs/my_verified_calibration_real.json')
 out_img = Path(_args[3] or proj / 'out/maze_board_markers.png')
 out_img.parent.mkdir(exist_ok=True)
 sys.path.insert(0, str(proj))
+from robot_games.calibrate import fit_plane
 from robot_games.camera_select import choose_camera
 from robot_games.paper_maze import marker_board_corners, perspective_board, crop_to_maze
 cfg = yaml.safe_load((proj / 'configs/default.yaml').read_text())
@@ -23,8 +24,7 @@ cal = json.loads(field.read_text())
 m = {x['id']: x for x in cal['markers']}
 TL, TR, BR, BL = (np.array(m[i]['base_xy'], float) for i in ids)
 zs = [x['base_z'] for x in cal['markers']]
-pts = np.array([(*x['base_xy'], x['base_z']) for x in cal['markers']])
-a, b, c = np.linalg.lstsq(np.c_[pts[:, 0], pts[:, 1], np.ones(len(pts))], pts[:, 2], rcond=None)[0]
+a, b, c = fit_plane([(*x['base_xy'], x['base_z']) for x in cal['markers']])
 center = (TL + TR + BR + BL) / 4
 mismatch = np.linalg.norm((TR - TL) - (BR - BL))
 print('board markers TL,TR,BR,BL', ids, [np.round(v, 1).tolist() for v in (TL, TR, BR, BL)])

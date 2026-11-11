@@ -53,10 +53,12 @@ STOP_STATES={3,5,6,9,10}   # SAFE_OFF, SAFE_STOP, EMERGENCY_STOP, SAFE_STOP2, SA
 
 class GuardedDoosan:
     """Only runs motion when armed AND calibration confirmed; requires sourced Jazzy DSR_ROBOT2."""
-    def __init__(self, config, need_celebration=True):
-        if not (config.get('armed') and config.get('calibration_confirmed')):
+    def __init__(self, config, need_celebration=True, for_calibration=False):
+        # [실기] for_calibration=True: 보정·교시 도구(calibrate.py)용. 보정 전이라 calibration_confirmed 와 home 교시는
+        # 요구하지 않는다(armed 는 항상 필요).
+        if not config.get('armed') or not (for_calibration or config.get('calibration_confirmed')):
             raise PermissionError('Robot not armed and calibrated')
-        if config.get('home_joints_deg') is None or (need_celebration and config.get('celebration_joints_deg') is None):
+        if not for_calibration and (config.get('home_joints_deg') is None or (need_celebration and config.get('celebration_joints_deg') is None)):
             raise ValueError('Home/celebration must be taught and validated on real arm')
         self.cfg=config
         import rclpy
@@ -75,7 +77,7 @@ class GuardedDoosan:
             if system!=0:  # [실기] 0=REAL, 1=VIRTUAL(에뮬레이터): 실기 클래스는 실제 컨트롤러에만 연결
                 raise PermissionError(f'Controller is not REAL (robot_system={system})')
             _patch_dsr_msgs()
-            from DSR_ROBOT2 import movej,movel,movesx,posj,posx,get_current_posx,get_current_posj,get_robot_state,change_operation_speed,DR_MVS_VEL_CONST
+            from DSR_ROBOT2 import movej,movel,movesx,posj,posx,get_current_posx,get_current_posj,get_robot_state,change_operation_speed,DR_MVS_VEL_CONST,fkin,DR_BASE,DR_WORLD
             # [실기] 컨트롤러 전체 속도 배율. DART 에서 10% 로 남아 있으면 모든 동작이 10배 느려진다(2026-11-10 실측)
             change_operation_speed(int(config.get('operation_speed_pct',100)))
         except BaseException:
@@ -83,6 +85,17 @@ class GuardedDoosan:
         self.movej,self.movel,self.posj,self.posx=movej,movel,posj,posx
         self.movesx,self.vel_const=movesx,DR_MVS_VEL_CONST
         self._posx_now,self._posj_now,self._state=get_current_posx,get_current_posj,get_robot_state
+        self._fkin,self.DR_BASE,self.DR_WORLD=fkin,DR_BASE,DR_WORLD
+    # [실기] 보정·교시 도구(calibrate.py, jog.py)가 쓰는 공개 메서드
+    def current_posx(self, ref=None):
+        p=self._posx_now() if ref is None else self._posx_now(ref)
+        return [float(v) for v in (p[0] if isinstance(p,tuple) else p)]
+    def current_posj(self): return [float(v) for v in self._posj_now()]
+    def fkin(self, q):
+        f=self._fkin(self.posj(*map(float,q))); return [float(v) for v in (f[0] if isinstance(f,tuple) else f)]
+    def move_line(self, pose, vel=None, acc=None):
+        self._line(list(map(float,pose)),float(vel or self.cfg['speed_mm_s']),float(acc or self.cfg['accel_mm_s2']))
+    def move_joint(self, q): self._joint(list(map(float,q)))
     def state(self):
         try: return self._state()
         except Exception: return -1
