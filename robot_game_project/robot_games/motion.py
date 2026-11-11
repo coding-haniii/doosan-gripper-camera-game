@@ -51,6 +51,65 @@ SPLINE_MAX_POINTS=100                  # movesx 한 번에 넣는 최대 점 수
 MIN_SPLINE_STEP_MM=2.0                 # 이보다 가까운 연속 점은 버린다. 1mm 미만 구간이 있으면 컨트롤러가 일정 속도를
                                        # 포기하고(알람 3213 CONSTANT SPEED IS NOT AVAILABLE) 크게 느려진다(2026-11-11 실측 44초 → 약 9초 기대)
 STOP_STATES={3,5,6,9,10}   # SAFE_OFF, SAFE_STOP, EMERGENCY_STOP, SAFE_STOP2, SAFE_OFF2 (dsr_msgs2 GetRobotState)
+CORNER_RADIUS_MM=5.0       # [실기] 모서리를 이 반지름 원호로 둥글게 (직각에서 원래 경로와 최대 약 2mm 차이, 통로 여유 8~12mm)
+SIMPLIFY_EPS_MM=0.4        # 계단 점을 직선으로 정리할 때 허용 오차
+STRAIGHT_STEP_MM=8.0       # 직선 구간 점 간격
+ARC_STEP_MM=2.0            # 원호 점 간격 (MIN_SPLINE_STEP_MM 이상)
+
+
+def _simplify(pts, eps):
+    """Douglas-Peucker (XY 기준). pts 는 [x,y,z,...] 목록, 원래 점 중 일부를 돌려준다."""
+    if len(pts)<3: return list(pts)
+    a,b=np.asarray(pts[0][:2]),np.asarray(pts[-1][:2]); ab=b-a; L=np.hypot(*ab)
+    def dist(p):
+        p=np.asarray(p[:2])
+        return np.hypot(*(p-a)) if L<1e-9 else abs(ab[0]*(p-a)[1]-ab[1]*(p-a)[0])/L
+    d=[dist(p) for p in pts[1:-1]]; k=int(np.argmax(d))+1
+    if d[k-1]<=eps: return [pts[0],pts[-1]]
+    return _simplify(pts[:k+1],eps)[:-1]+_simplify(pts[k:],eps)
+
+
+def smooth_pen_path(seg, radius=CORNER_RADIUS_MM, eps=SIMPLIFY_EPS_MM, straight_step=STRAIGHT_STEP_MM, arc_step=ARC_STEP_MM):
+    """[실기] 펜 내린 경로의 모서리를 원호로 둥글게 하고 점 간격을 고르게 한다.
+    경로 풀이가 상하좌우 픽셀 이동이라 통로 모서리에서 3~5mm 안에 90°를 꺾었고, 일정 속도 스플라인이 그 직전에
+    크게 감속해 멈칫했다(2026-11-11). 시작·끝점과 자세는 그대로, Z 는 경로를 따라 선형으로 잇는다.
+    seg: [[x,y,z,rx,ry,rz], ...] → 같은 형식의 새 목록 (연속 점 간격 >= MIN_SPLINE_STEP_MM, 끝점 제외)"""
+    rpy=list(seg[0][3:6]); P=[list(map(float,p[:3])) for p in seg]
+    P=[p for i,p in enumerate(P) if i==0 or np.hypot(p[0]-P[i-1][0],p[1]-P[i-1][1])>0.05]
+    K=_simplify(P,eps)
+    if len(K)<2: return [list(K[0])+rpy]
+    out=[np.asarray(K[0],float)]
+    for i in range(1,len(K)-1):
+        p0,p1,p2=(np.asarray(K[j],float) for j in (i-1,i,i+1))
+        v1,v2=p1[:2]-p0[:2],p2[:2]-p1[:2]; l1,l2=np.hypot(*v1),np.hypot(*v2)
+        u1,u2=v1/l1,v2/l2; cross=u1[0]*u2[1]-u1[1]*u2[0]
+        theta=np.arccos(np.clip(u1@u2,-1,1))
+        if theta<np.radians(5):
+            out.append(p1); continue
+        t=min(radius*np.tan(theta/2),0.45*l1,0.45*l2); r=t/np.tan(theta/2)
+        A=p1.copy(); A[:2]-=u1*t; A[2]=p1[2]-(p1[2]-p0[2])*t/l1
+        B=p1.copy(); B[:2]+=u2*t; B[2]=p1[2]+(p2[2]-p1[2])*t/l2
+        n=np.array([-u1[1],u1[0]])*(1 if cross>0 else -1); C=A[:2]+n*r
+        a0=np.arctan2(*(A[:2]-C)[::-1]); sweep=theta*(1 if cross>0 else -1)
+        k=max(1,int(r*theta//arc_step))
+        out.append(A)
+        for s in range(1,k):
+            f=s/k; ang=a0+sweep*f
+            out.append(np.array([C[0]+r*np.cos(ang),C[1]+r*np.sin(ang),A[2]+(B[2]-A[2])*f]))
+        out.append(B)
+    out.append(np.asarray(K[-1],float))
+    # 직선 구간을 straight_step 간격으로 채운다 (점이 너무 멀면 스플라인이 직선에서 부풀 수 있음)
+    dense=[out[0]]
+    for q in out[1:]:
+        p=dense[-1]; L=np.hypot(*(q[:2]-p[:2])); n=int(L//straight_step)
+        dense+= [p+(q-p)*(s/(n+1)) for s in range(1,n+1)] if L>straight_step else []
+        dense.append(q)
+    res=[dense[0]]
+    for q in dense[1:-1]:
+        if np.hypot(*(q[:2]-res[-1][:2]))>=MIN_SPLINE_STEP_MM: res.append(q)
+    if len(res)>1 and np.hypot(*(dense[-1][:2]-res[-1][:2]))<MIN_SPLINE_STEP_MM: res.pop()
+    res.append(dense[-1])
+    return [[float(v) for v in q]+rpy for q in res]
 
 class GuardedDoosan:
     """Only runs motion when armed AND calibration confirmed; requires sourced Jazzy DSR_ROBOT2."""
@@ -148,9 +207,7 @@ class GuardedDoosan:
             while j<len(rows) and rows[j]['pen']=='down': j+=1
             seg=[pose(r) for r in rows[i:j]]
             self._line(seg[0],vel,acc)                       # 펜 내리기 (시작점)
-            pts=[seg[0]]
-            for q in seg[1:]:
-                if sum((a-b)**2 for a,b in zip(q[:3],pts[-1][:3]))**.5>=MIN_SPLINE_STEP_MM: pts.append(q)
+            pts=smooth_pen_path(seg)                         # 모서리 원호 + 고른 점 간격 (멈칫 방지)
             for k in range(1,len(pts),SPLINE_MAX_POINTS-1):  # 앞 묶음의 끝점에서 이어서 시작
                 self._spline(pts[k:k+SPLINE_MAX_POINTS-1],vel,acc)
             i=j
