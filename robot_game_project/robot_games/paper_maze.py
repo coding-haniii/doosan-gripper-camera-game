@@ -41,13 +41,70 @@ def crop_to_maze(board, invert=False, threshold=0, pad=3, return_offset=False):
     n, labels, stats, _ = cv2.connectedComponentsWithStats(wall.astype(np.uint8), connectivity=8)
     H, W = board.shape[:2]
     out, off = board, (0, 0)
-    if n > 1:
-        big = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-        x, y, w, h = stats[big, :4]
+    # [실기] 입구·출구가 바깥 벽을 여러 조각으로 나누므로 가장 큰 덩어리 하나가 아니라 큰 벽 덩어리들을 모두 포함한다.
+    # 보드 모서리 마커 조각처럼 이미지 가장자리에 닿은 덩어리는 제외한다.
+    keep = [k for k in range(1, n) if stats[k, 0] > 0 and stats[k, 1] > 0
+            and stats[k, 0] + stats[k, 2] < W and stats[k, 1] + stats[k, 3] < H]
+    if keep:
+        biggest = max(stats[k, cv2.CC_STAT_AREA] for k in keep)
+        keep = [k for k in keep if stats[k, cv2.CC_STAT_AREA] >= 0.1 * biggest]
+    if keep:
+        x = min(stats[k, 0] for k in keep); y = min(stats[k, 1] for k in keep)
+        w = max(stats[k, 0] + stats[k, 2] for k in keep) - x; h = max(stats[k, 1] + stats[k, 3] for k in keep) - y
         if w * h >= 0.2 * W * H:
             x0, y0 = max(0, x - pad), max(0, y - pad)
             out, off = board[y0:min(H, y + h + pad), x0:min(W, x + w + pad)].copy(), (int(x0), int(y0))
     return (out, off) if return_offset else out
+
+
+def find_openings(board, invert=False, threshold=0, min_gap=10):
+    """[실기] 미로 바깥 테두리 벽이 끊긴 곳(입구·출구)을 찾는다.
+    pick_endpoints 는 이미지 모서리에 가까운 흰 점을 골라서, 크롭 여백(벽 바깥)을 시작·도착점으로 잡고
+    미로 바깥 테두리를 도는 경로를 냈다(2026-11-11 실측). 그래서 네 변마다 바깥 벽의 중심선을 찾고, 그 선 위에서
+    벽이 min_gap 픽셀 이상 끊긴 구간을 입구·출구로 본다.
+    반환: (start, goal, inside) — start/goal 은 벽 안쪽으로 들어간 점, inside 는 (x0, y0, x1, y1) 바깥 벽 중심선 상자.
+    두 곳을 못 찾으면 None."""
+    wall = 1 - candidate_walkable(board, invert=invert, threshold=threshold, clearance=0)
+    h, w = wall.shape
+    depth = max(4, min(h, w) // 8)
+
+    def best_line(profile_fn, n):
+        fr = [profile_fn(k).mean() for k in range(n)]
+        k = int(np.argmax(fr))
+        return k, fr[k]
+    top, ft = best_line(lambda k: wall[k, :], depth)
+    bot, fb = best_line(lambda k: wall[h - 1 - k, :], depth)
+    left, fl = best_line(lambda k: wall[:, k], depth)
+    right, fr_ = best_line(lambda k: wall[:, w - 1 - k], depth)
+    if min(ft, fb, fl, fr_) < 0.5:                  # 바깥 벽이 뚜렷하지 않음
+        return None
+    y0, y1, x0, x1 = top, h - 1 - bot, left, w - 1 - right
+    inward = 3 * max(top, bot, left, right, 3)      # 벽 두께보다 충분히 안쪽
+
+    gaps = []
+    def scan(line, fixed, axis, normal, lo, hi):
+        run = None
+        for i in range(lo, hi + 1):
+            free = line[i] == 0
+            if free and run is None:
+                run = i
+            if (not free or i == hi) and run is not None:
+                end = i if free else i - 1
+                if end - run + 1 >= min_gap:
+                    mid = (run + end) // 2
+                    p = (mid, fixed) if axis == 'x' else (fixed, mid)
+                    q = (p[0] + normal[0] * inward, p[1] + normal[1] * inward)
+                    gaps.append((end - run + 1, (int(np.clip(q[0], 0, w - 1)), int(np.clip(q[1], 0, h - 1)))))
+                run = None
+    scan(wall[y0, :], y0, 'x', (0, 1), x0, x1)
+    scan(wall[y1, :], y1, 'x', (0, -1), x0, x1)
+    scan(wall[:, x0], x0, 'y', (1, 0), y0, y1)
+    scan(wall[:, x1], x1, 'y', (-1, 0), y0, y1)
+    if len(gaps) < 2:
+        return None
+    pts = [p for _, p in sorted(gaps, reverse=True)[:2]]
+    pts.sort(key=lambda p: p[0] + p[1])             # 왼쪽 위에 가까운 쪽이 시작
+    return pts[0], pts[1], (x0, y0, x1, y1)
 
 
 def pick_endpoints(walk):
@@ -83,8 +140,13 @@ def snap_point(walkable, pt, max_radius=50):
     raise ValueError('Start or finish not near a white corridor. Check maze contrast or clearance.')
 
 
-def solve(board, start, goal, *, invert=False, threshold=0, clearance=2):
+def solve(board, start, goal, *, invert=False, threshold=0, clearance=2, inside=None):
     walk = candidate_walkable(board, invert=invert, threshold=threshold, clearance=clearance)
+    if inside is not None:                          # [실기] 바깥 벽 밖 여백을 막아 경로가 미로 바깥을 돌지 못하게
+        x0, y0, x1, y1 = inside
+        mask = np.zeros_like(walk)
+        mask[y0:y1 + 1, x0:x1 + 1] = 1
+        walk = walk * mask
     s, g = snap_point(walk, start), snap_point(walk, goal)
     h, w = walk.shape
     parent = np.full((h, w), -1, dtype=np.int32)
@@ -175,6 +237,28 @@ def make_sample(seed=7, cells=7, scale=24):
     return img, (int(1.5 * scale), int(1.5 * scale)), (int((2 * cells - .5) * scale), int((2 * cells - .5) * scale))
 
 
+def marker_board_corners(frame, ids=None):
+    """[실기] 테이블에 고정한 ArUco 마커 4장의 중심을 보드 모서리(TL, TR, BR, BL)로 쓴다.
+    흰 종이가 흰 테이블 위에 작게(화면의 ~4%) 놓이면 auto_detect_board_corners 가 종이를 못 찾고
+    고정 사각형을 돌려준다(2026-11-11 실측). 마커는 항상 보이고 로봇 좌표를 펜으로 직접 재 두었으므로
+    보정(my_verified_calibration_real.json)도 이 네 점 기준이다. 4장이 다 안 보이면 None."""
+    import yaml
+    if ids is None:
+        cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / 'configs' / 'default.yaml').read_text(encoding='utf-8'))
+        ids = (cfg.get('vision') or {}).get('board_marker_ids')
+    if not ids:
+        return None
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+    det = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), cv2.aruco.DetectorParameters())
+    corners, found, _ = det.detectMarkers(gray)
+    if found is None:
+        return None
+    centers = {int(i): c.reshape(4, 2).mean(axis=0) for i, c in zip(found.ravel(), corners)}
+    if not all(int(i) in centers for i in ids):
+        return None
+    return [centers[int(i)].tolist() for i in ids]
+
+
 def auto_detect_board_corners(frame):
     h, w = frame.shape[:2]
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -209,6 +293,12 @@ def capture(camera_index=None):
     cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
         raise RuntimeError(f'Cannot open webcam {camera_index}')
+    # [실기] 카드·틱택토와 같이 default.yaml 의 camera.width/height 를 쓴다 (1280x720: 1px ≈ 1mm, 보정과 같은 해상도)
+    import yaml
+    cam = yaml.safe_load((Path(__file__).resolve().parents[1] / 'configs' / 'default.yaml').read_text(encoding='utf-8')).get('camera') or {}
+    for key, prop in (('width', cv2.CAP_PROP_FRAME_WIDTH), ('height', cv2.CAP_PROP_FRAME_HEIGHT)):
+        if cam.get(key):
+            cap.set(prop, cam[key])
     try:
         cv2.namedWindow('Maze camera', cv2.WINDOW_NORMAL)
         while True:
@@ -249,7 +339,7 @@ def main(argv=None):
     if args.robot_mode != 'mock':
         raise PermissionError('Physical motion disabled: camera-to-robot calibration and safety are NOT commissioned')
 
-    crop_off = (0, 0)
+    crop_off, inside = (0, 0), None
     if args.source == 'demo':
         board, start, goal = make_sample(seed=args.seed)
         full_shape = board.shape
@@ -262,12 +352,22 @@ def main(argv=None):
                 raise ValueError(f'Cannot open image: {args.image}')
         else:
             frame = capture(args.camera_index)
-            board, _ = perspective_board(frame, auto_detect_board_corners(frame), width=600, height=600)
+            corners = marker_board_corners(frame)           # [실기] 마커 4장이 보이면 그것을 보드 모서리로
+            if corners is None:
+                print('[BOARD] 보드 마커 4장이 다 보이지 않음 → 종이 자동 검출 사용')
+                corners = auto_detect_board_corners(frame)
+            board, _ = perspective_board(frame, corners, width=600, height=600)
         full_shape = board.shape
         if not args.no_crop:
             board, crop_off = crop_to_maze(board, invert=args.invert, threshold=args.threshold, return_offset=True)
         walk_temp = candidate_walkable(board, invert=args.invert, threshold=args.threshold, clearance=args.clearance)
-        auto_s, auto_g = pick_endpoints(walk_temp)
+        found = find_openings(board, invert=args.invert, threshold=args.threshold)
+        if found is not None:
+            auto_s, auto_g, inside = found
+            print(f'[MAZE] 입구 {auto_s} → 출구 {auto_g}')
+        else:
+            print('[MAZE] 입구·출구를 찾지 못함 → 이미지 모서리 기준 자동 선택')
+            auto_s, auto_g = pick_endpoints(walk_temp)
         start = tuple(args.start) if args.start else auto_s
         goal = tuple(args.goal) if args.goal else auto_g
 
@@ -279,7 +379,8 @@ def main(argv=None):
                                    clearance=args.clearance) * 255)
     print(f'[MOCK] start={start} goal={goal} board={board.shape[1]}x{board.shape[0]}')
 
-    path, walk = solve(board, start, goal, invert=args.invert, threshold=args.threshold, clearance=args.clearance)
+    path, walk = solve(board, start, goal, invert=args.invert, threshold=args.threshold, clearance=args.clearance,
+                       inside=None if (args.start or args.goal) else inside)
     cv2.imwrite(str(out / 'paper_maze_walkable.png'), walk * 255)
     cv2.imwrite(str(out / 'paper_maze_solved.png'), render(board, path))
     plan = trajectory(path, full_shape, crop_off)

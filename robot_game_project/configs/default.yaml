@@ -1,11 +1,15 @@
 camera:
-  index: 0
+  index: 0                    # RealSense 컬러를 못 찾을 때 쓰는 기본 카메라 (미로는 camera_select 가 자동으로 찾음)
+  width: 1280                 # [실기] 1280x720: 테이블 위 1px ≈ 1mm, 카메라-로봇 보정과 같은 해상도
+  height: 720
   crop: null
 vision:
   card_min_confidence: 0.55
   maze_threshold: 170
   maze_clearance_px: 3
   maze_step_px: 8
+  # [실기] 보드 모서리로 쓰는 ArUco 마커 id (카메라 화면 기준 TL, TR, BR, BL). 로봇 좌표는 2026-11-10 펜 끝으로 실측
+  board_marker_ids: [1, 3, 2, 0]
 robot:
   namespace: dsr01
   model: e0509

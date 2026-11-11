@@ -1,9 +1,38 @@
 {
-  "measured_and_verified": false, 
-  "origin_base_mm": null,
-  "x_span_base_mm": null,
-  "y_span_base_mm": null,
-  "pen_contact_z_base_mm": null,
-  "pen_up_z_base_mm": null,
-  "tool_orientation_deg": null
+  "_note": "robot_game_project 실측 보정 (2026-11-11). 보드 = ArUco 마커 1,3,2,0 중심(TL,TR,BR,BL), 로봇 좌표는 2026-11-10 펜 끝 터치 실측. 마커를 움직이면 다시 재야 함",
+  "measured_and_verified": false,
+  "origin_base_mm": [
+    449.898,
+    -150.015,
+    44.881
+  ],
+  "x_span_base_mm": [
+    -0.004,
+    299.988,
+    0.0
+  ],
+  "y_span_base_mm": [
+    210.076,
+    0.03,
+    0.0
+  ],
+  "pen_contact_z_base_mm": 46.799,
+  "pen_up_z_base_mm": 78.934,
+  "tool_orientation_deg": [
+    4.436,
+    -179.982,
+    4.433
+  ],
+  "pen_contact_plane": [
+    0.018999,
+    -0.000521,
+    36.2557
+  ],
+  "pen_press_mm": 0.5,
+  "board_marker_ids": [
+    1,
+    3,
+    2,
+    0
+  ]
 }
