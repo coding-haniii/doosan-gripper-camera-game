@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **팀원 코드가 기준입니다.** 지금 단계에서는 없는 기능을 새로 만들지 않습니다. 실기에서 꼭 필요하다고 확인된 수정만 팀원 파일 구조 그대로 몇 줄 단위로 넣습니다. 범위를 넓히기 전에 사용자에게 묻습니다.
 - 작업 브랜치는 `jmc`(팀 `dev` 기준)입니다. 예전 개인 저장소 작업(감독 루프, 그리퍼 펜 거치대, 예전 구조 테스트 등)은 `legacy-robot_games-jmc` 브랜치에 보관되어 있습니다. 필요할 때 거기서 가져옵니다.
-- 현재 실기로 확인된 것은 **미로 그리기**(2026-11-11)입니다. 틱택토는 팀원 카메라 미리보기(`robot_games/tictactoe/`, mock 전용)까지만 있습니다.
+- 실기 확인(2026-11-11): **미로**(`maze_game`)와 **틱택토**(`app --game 1`, 로봇이 X를 종이에 그림) 각각 처음부터 끝까지 동작. 다음 단계는 카드 인식(OCR)과 `app.py`로 묶기이고, 카드 루프는 아직 보류입니다.
 - 설비 값, 보정, 실기 절차와 함정은 [robot_game_project/docs/REAL_CELL.md](robot_game_project/docs/REAL_CELL.md)에 있습니다.
 
 ## 명령어 (`robot_game_project/`에서)
@@ -20,7 +20,8 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q -p no:cacheprovid
 .venv/bin/python -m robot_games.maze_game --source demo                                  # 미로 mock (카메라·로봇 없음)
 .venv/bin/python -m robot_games.maze_game --mode emulator --use-real-calibration --execute-motion   # 실측 보정 CSV를 에뮬레이터로 리허설
 .venv/bin/python scripts/preview_maze_path.py                                            # 로봇 없이 실기 경로를 사진 위에 그려 확인
-.venv/bin/python -m robot_games.maze_game --source camera --mode real --execute-motion   # 실기 (bringup 필요, REAL_CELL.md)
+.venv/bin/python -m robot_games.maze_game --source camera --mode real --execute-motion   # 미로 실기 (bringup 필요, REAL_CELL.md)
+.venv/bin/python -m robot_games.app --game 1 --mode real --execute-motion                 # 틱택토 실기 (로봇 X, 사람 O)
 .venv/bin/python -m robot_games.calibrate view|markers|camera-robot|poses|gripper        # 재보정·교시·그리퍼 시험 도구
 ```
 
@@ -36,6 +37,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q -p no:cacheprovid
   - `maze_csv`: `pen_contact_plane`(테이블 기울기)과 `pen_press_mm`으로 행마다 펜 Z를 계산합니다.
   - `motion.GuardedDoosan`: `DSR_ROBOT2` 별칭, REAL 컨트롤러 확인, 속도 배율 100%, 도착 확인, `min_pen_z_base_mm` 하한. 펜 내린 구간은 `movesx`로 그립니다(50mm/s, 상한 60).
   - `dsr_preflight.py`: 팀원 커밋에서 빠져 있던 파일을 추가했습니다. `camera_select.py`는 실행할 때마다 RealSense 컬러 노드를 찾습니다.
+- **틱택토 실기**(`tictactoe/tictactoe.py`, 팀원 미리보기에 연결 지점만 추가): `RobotX`가 X 획(보드 px)을 `inv(matrix)` → 카메라 px → 마커 호모그래피(`configs/field/` 실측 좌표) → 로봇 XY로 바꿔 `run_rows`로 그리고 home으로 비킵니다. 펜 높이는 미로와 같은 `my_verified_calibration_real.json`(설정 `robot.drawing_calibration`으로 리허설용 사본 지정 가능). 그린 뒤 `refresh_board`로 보드를 다시 찍어야 `new_human_move`가 다음 O를 막지 않습니다.
 - **보정·교시 도구** `robot_games/calibrate.py` + `jog.py`(예전 저장소에서 옮김): 로봇 연결은 팀원 `motion.GuardedDoosan(for_calibration=True)`, 마커 검출은 `paper_maze.detect_markers`, 카메라는 `camera_select`, 그리퍼 시험은 `gripper.FlangeGripper`(팀원 `RobotisGripper` 옆에 추가)를 씁니다. 결과는 `configs/field/`에 저장되고, `scripts/make_maze_calibration.py`가 마커 실측값으로 `configs/my_verified_calibration_real.json`을 다시 만듭니다.
 - 같은 일을 하는 코드를 두 벌 두지 않습니다. 필요한 기능은 팀원 파일에 메서드나 함수로 추가합니다.
 
