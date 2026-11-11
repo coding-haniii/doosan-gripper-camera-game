@@ -39,6 +39,14 @@ class HolderError(RuntimeError):
     pass
 
 
+class AlreadyHolding(HolderError):
+    """집기를 하려는데 그리퍼가 이미 펜 부품을 쥐고 있음 (main 종료코드 3: 호출자는 그대로 게임 진행)."""
+
+
+EXIT_ALREADY_HOLDING = 3
+EXIT_NOT_HOLDING = 4           # 반납하려는데 빈 손 → 아무 동작 없이 끝냄
+
+
 # ---------------------------------------------------------------- 마커 → 거치대 위치
 def _to_base(H, px):
     q = np.asarray(H, float) @ [float(px[0]), float(px[1]), 1.0]
@@ -193,7 +201,7 @@ def pick(robot, gripper, poses, rehearsal=False, log=print):
     거치대에 내려간 뒤 오류가 나면: 파지 실패면 열고, 그 밖에는 그리퍼를 그대로 둔 채 수직으로 빠진 뒤 BackedOff."""
     from .gripper import PenNotHeld
     if _holding_now(gripper):
-        raise HolderError('그리퍼가 이미 펜 부품을 쥐고 있음 — 열면 떨어지므로 집기를 하지 않음 (반납 먼저)')
+        raise AlreadyHolding('그리퍼가 이미 펜 부품을 쥐고 있음 — 열면 떨어지므로 집기를 하지 않음')
     gripper.open()
     robot.move_line(poses['approach'])
     robot.move_line(poses['grasp'], SLOW_MM_S)
@@ -276,6 +284,7 @@ def main(argv=None):
     p.add_argument('--execute-motion', action='store_true')
     p.add_argument('--rehearsal', action='store_true', help='50mm 위에서 경로만, 그리퍼 닫기·열기 없음(집기 전 열기만)')
     p.add_argument('--lift', type=float, help='리허설 높이(mm, 기본=max(50, 접근-잡기)). 집기 리허설에서 부품 바로 위까지 보려면 10~20')
+    p.add_argument('--yes', action='store_true', help='RUN 입력 생략 (app 이 --execute-motion 으로 이미 승인했을 때)')
     p.add_argument('--config')
     a = p.parse_args(argv)
     if a.lift is not None and not a.rehearsal:
@@ -299,7 +308,7 @@ def main(argv=None):
         return 2
     print(f'[HOLDER] 마커 ({marker[0]:.1f}, {marker[1]:.1f}) {marker[2]:.1f}°  접근 {[round(v, 1) for v in poses["approach"][:3]]}'
           f'  잡기 {[round(v, 1) for v in poses["grasp"][:3]]}')
-    if input('로봇이 움직입니다. 주변이 비었으면 RUN 입력: ').strip() != 'RUN':
+    if not a.yes and input('로봇이 움직입니다. 주변이 비었으면 RUN 입력: ').strip() != 'RUN':
         print('취소')
         return 1
     from .motion import GuardedDoosan
@@ -307,6 +316,9 @@ def main(argv=None):
     robot = GuardedDoosan(cfg['robot'], need_celebration=False)
     try:
         gripper = FlangeGripper(cfg['gripper'])
+        if a.action == 'return' and not a.rehearsal and _holding_now(gripper) is False:
+            print('[HOLDER] 그리퍼가 비어 있음 → 반납할 것이 없음 (움직이지 않음)')
+            return EXIT_NOT_HOLDING
         robot.home()
         if a.action == 'pick':
             pick(robot, gripper, poses, rehearsal=a.rehearsal)
@@ -317,6 +329,9 @@ def main(argv=None):
             give_back(robot, gripper, poses, rehearsal=a.rehearsal)
         robot.home()
         return 0
+    except AlreadyHolding as e:                     # 집기 전에 확인 → 팔은 home 에 있음
+        print(f'[HOLDER] {e} → 그대로 진행')
+        return EXIT_ALREADY_HOLDING
     except BaseException as e:                       # 소켓 시간 초과(OSError), Ctrl+C 등 모두
         print(f'[STOP] {type(e).__name__}: {e}', file=sys.stderr)
         # 거치대에서 수직으로 빠져 나온 경우(BackedOff)나 거치대에 내려가기 전 오류만 home 으로 간다.
