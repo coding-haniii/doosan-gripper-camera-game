@@ -85,6 +85,9 @@ def convert(plan_path=PLAN_DEFAULT, mode="mock", calib_path=None, out_csv=None) 
         x, y, z = (origin[i] + u * xs[i] + v * ys[i] for i in range(3))
         if z_up is not None and z_dn is not None:          # 실측 Z 가 있으면 펜 상태별 고정 높이
             z = float(z_up) if item["pen"] == "up" else float(z_dn)
+            plane = cal.get("pen_contact_plane")             # [실기] 테이블 기울기: z = a*x + b*y + c (보정 때 마커별 접촉 높이로 계산)
+            if plane and item["pen"] == "down":
+                z = plane[0] * x + plane[1] * y + plane[2] - float(cal.get("pen_press_mm", 0.5))
         rows.append([step, item["action"], round(x, 3), round(y, 3), round(z, 3), item["pen"],
                      *(("" if r is None else r) for r in rpy)])
 

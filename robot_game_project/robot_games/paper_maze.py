@@ -35,17 +35,19 @@ def candidate_walkable(board, invert=False, threshold=0, clearance=2):
     return binary
 
 
-def crop_to_maze(board, invert=False, threshold=0, pad=3):
+def crop_to_maze(board, invert=False, threshold=0, pad=3, return_offset=False):
+    # [실기] return_offset=True 면 (잘린 이미지, (x0, y0)) — 펜 좌표를 보드 전체 기준으로 되돌릴 때 필요
     wall = 1 - candidate_walkable(board, invert=invert, threshold=threshold, clearance=0)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(wall.astype(np.uint8), connectivity=8)
-    if n <= 1:
-        return board
-    big = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    x, y, w, h = stats[big, :4]
     H, W = board.shape[:2]
-    if w * h < 0.2 * W * H:
-        return board
-    return board[max(0, y - pad):min(H, y + h + pad), max(0, x - pad):min(W, x + w + pad)].copy()
+    out, off = board, (0, 0)
+    if n > 1:
+        big = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        x, y, w, h = stats[big, :4]
+        if w * h >= 0.2 * W * H:
+            x0, y0 = max(0, x - pad), max(0, y - pad)
+            out, off = board[y0:min(H, y + h + pad), x0:min(W, x + w + pad)].copy(), (int(x0), int(y0))
+    return (out, off) if return_offset else out
 
 
 def pick_endpoints(walk):
@@ -130,9 +132,12 @@ def render(board, path):
     return out
 
 
-def trajectory(path, image_shape):
+def trajectory(path, image_shape, offset=(0, 0)):
+    # [실기] image_shape 은 보드 전체(원근 보정한 600x600) 크기, offset 은 크롭 시작점.
+    # 보정(my_verified_calibration_real.json)이 보드 모서리 기준이므로 크롭 이미지가 아니라 보드 전체 기준으로 정규화한다.
     h, w = image_shape[:2]
-    coords = [[round(x / max(1, w - 1), 6), round(y / max(1, h - 1), 6)] for x, y in path]
+    ox, oy = offset
+    coords = [[round((x + ox) / max(1, w - 1), 6), round((y + oy) / max(1, h - 1), 6)] for x, y in path]
     return {
         'reference_frame': 'rectified_maze_image',
         'unit': 'fraction_of_image_width_height',
@@ -197,7 +202,10 @@ def auto_detect_board_corners(frame):
     return [[mw, mh], [w - mw, mh], [w - mw, h - mh], [mw, h - mh]]
 
 
-def capture(camera_index):
+def capture(camera_index=None):
+    if camera_index is None:                      # [실기] 번호를 안 주면 실행할 때마다 RealSense 컬러를 찾는다
+        from .camera_select import choose_camera
+        camera_index = choose_camera()
     cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
         raise RuntimeError(f'Cannot open webcam {camera_index}')
@@ -224,7 +232,7 @@ def capture(camera_index):
 def main(argv=None):
     p = argparse.ArgumentParser(description='Webcam paper maze -> path and pen trajectory preview; MOCK ONLY')
     p.add_argument('--source', choices=['camera', 'image', 'demo'], default='camera')
-    p.add_argument('--camera-index', type=int, default=0)
+    p.add_argument('--camera-index', type=int, default=None, help='생략하면 RealSense 컬러 카메라를 자동으로 찾음')
     p.add_argument('--image')
     p.add_argument('--seed', type=int, default=7)
     p.add_argument('--start', type=int, nargs=2)
@@ -241,8 +249,10 @@ def main(argv=None):
     if args.robot_mode != 'mock':
         raise PermissionError('Physical motion disabled: camera-to-robot calibration and safety are NOT commissioned')
 
+    crop_off = (0, 0)
     if args.source == 'demo':
         board, start, goal = make_sample(seed=args.seed)
+        full_shape = board.shape
     else:
         if args.source == 'image':
             if not args.image:
@@ -253,8 +263,9 @@ def main(argv=None):
         else:
             frame = capture(args.camera_index)
             board, _ = perspective_board(frame, auto_detect_board_corners(frame), width=600, height=600)
+        full_shape = board.shape
         if not args.no_crop:
-            board = crop_to_maze(board, invert=args.invert, threshold=args.threshold)
+            board, crop_off = crop_to_maze(board, invert=args.invert, threshold=args.threshold, return_offset=True)
         walk_temp = candidate_walkable(board, invert=args.invert, threshold=args.threshold, clearance=args.clearance)
         auto_s, auto_g = pick_endpoints(walk_temp)
         start = tuple(args.start) if args.start else auto_s
@@ -271,7 +282,7 @@ def main(argv=None):
     path, walk = solve(board, start, goal, invert=args.invert, threshold=args.threshold, clearance=args.clearance)
     cv2.imwrite(str(out / 'paper_maze_walkable.png'), walk * 255)
     cv2.imwrite(str(out / 'paper_maze_solved.png'), render(board, path))
-    plan = trajectory(path, board.shape)
+    plan = trajectory(path, full_shape, crop_off)
     with open(out / 'paper_maze_pen_plan.json', 'w', encoding='utf-8') as fp:
         json.dump(plan, fp, indent=2)
     print(f'[MOCK] Camera/image maze solved: {len(path)} waypoints, start={path[0]}, finish={path[-1]}')

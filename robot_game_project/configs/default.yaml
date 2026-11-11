@@ -11,9 +11,11 @@ robot:
   model: e0509
   mode: mock
   # All real motion disabled unless explicitly armed, AND calibrated.
-  armed: false
-  calibration_confirmed: false
-  home_joints_deg: null
+  armed: true                 # [실기] 2026-11-10 현장 준비·보정 확인 후 켬
+  calibration_confirmed: true
+  home_joints_deg: [-0.375, 2.062, 98.499, -0.003, 79.451, -0.376]   # [실기] 교시값 (종이 위 대기 자세)
+  operation_speed_pct: 100    # [실기] 컨트롤러 속도 배율. DART 에서 10% 로 남아 있어 모든 동작이 10배 느렸음
+  min_pen_z_base_mm: 40.0     # [실기] 펜 끝(pen_tip) Z 하한. 테이블 면 약 42~49mm (위치마다 기울기)
   celebration_joints_deg: null
   # Plane coordinate calibration, measured on-site (not example coordinates).
   board_origin_base_mm: null
