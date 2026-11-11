@@ -1,4 +1,6 @@
 import argparse
+import subprocess
+import sys
 from pathlib import Path
 from runpy import run_path  # [TIC 연결] 전용 게임 파일을 경로로 불러온다.
 import cv2
@@ -37,6 +39,23 @@ def maze(args,robot,cfg):
     if isinstance(robot,MockRobot):robot.draw(path,'maze')
     else:robot.draw(image_path_to_base(path,img.shape,cfg['robot']),'maze')
     robot.home()
+
+# [실기] 게임 앞뒤로 펜 거치대에서 펜 부품을 집고 반납한다(robot_games.pen_holder).
+# DSR_ROBOT2 는 프로세스당 연결 하나라서(미로는 maze_executor 가 따로 연결) 별도 프로세스로 실행한다.
+def pen_step(action, args, cfg, run=subprocess.run):
+    """True=펜을 쥔 상태로 게임 진행 가능. robot.pen_from_holder 가 false 면 아무것도 하지 않음(펜 미리 물림)."""
+    if not cfg['robot'].get('pen_from_holder'):
+        return True
+    if args.mode != 'real':
+        print(f'[MOCK] pen {action} (거치대)')
+        return True
+    print(f'=== 펜 {"집기" if action == "pick" else "반납"} (거치대) ===', flush=True)
+    rc = run([sys.executable, '-m', 'robot_games.pen_holder', action, '--execute-motion', '--yes'], cwd=str(ROOT)).returncode
+    if rc == 0 or (action == 'pick' and rc == 3) or (action == 'return' and rc == 4):   # 3: 이미 쥐고 있음, 4: 빈 손
+        return True
+    print(f'[경고] 펜 {action} 실패 (종료코드 {rc})' + (' — 로봇이 펜을 쥔 채일 수 있음. 확인 후 '
+          'python -m robot_games.pen_holder return --execute-motion' if action == 'return' else ''), file=sys.stderr)
+    return False
 
 def main():
     parser=argparse.ArgumentParser(description='Doosan E0509 camera games (mock-first)')
@@ -96,21 +115,32 @@ def main():
                     print('Card not recognized. Try again. (out/capture.png, out/debug/ 확인)')
         finally:
             cap.release();cv2.destroyAllWindows()
-    if game=='maze' and args.paper_maze:      # 카메라 종이 미로: 비전→JSON→CSV→로봇 연속 실행
-        from .maze_game import run as run_paper_maze
-        argv=['--mode',args.mode,'--source',args.paper_maze_source,'--seed',str(args.seed)]
-        if args.execute_motion: argv.append('--execute-motion')
-        if args.image: argv+=['--image',args.image]
-        raise SystemExit(run_paper_maze(argv))
     if args.mode=='real' and not args.execute_motion:
         raise PermissionError('Physical mode requires --execute-motion and separate calibrated+armed YAML')
-    robot=MockRobot() if args.mode=='mock' else GuardedDoosan(cfg['robot'])
+    # [실기] 미로·틱택토는 시작 전에 펜을 거치대에서 집고, 끝나면(오류여도) 반납한다
+    holding=False
+    if game=='exit':pen_step('return',args,cfg)   # [실기] 앞선 반납이 실패해 펜을 쥐고 있으면 여기서 반납(빈 손이면 그냥 넘어감)
+    if game in ('maze','tictactoe'):
+        if not pen_step('pick',args,cfg):raise SystemExit('펜을 집지 못해 게임을 시작하지 않음')
+        holding=True
     try:
-        if game=='tictactoe':tictactoe(args,robot,cfg)
-        elif game=='maze':maze(args,robot,cfg)
-        elif game=='exit':print('Exit card: safe exit');robot.home()
-        else:raise ValueError('Unknown game, no motion performed')
+        if game=='maze' and args.paper_maze:      # 카메라 종이 미로: 비전→JSON→CSV→로봇 연속 실행
+            from .maze_game import run as run_paper_maze
+            argv=['--mode',args.mode,'--source',args.paper_maze_source,'--seed',str(args.seed)]
+            if args.execute_motion: argv.append('--execute-motion')
+            if args.image: argv+=['--image',args.image]
+            rc=run_paper_maze(argv)
+            if rc:raise SystemExit(rc)
+            return
+        robot=MockRobot() if args.mode=='mock' else GuardedDoosan(cfg['robot'])
+        try:
+            if game=='tictactoe':tictactoe(args,robot,cfg)
+            elif game=='maze':maze(args,robot,cfg)
+            elif game=='exit':print('Exit card: safe exit');robot.home()
+            else:raise ValueError('Unknown game, no motion performed')
+        finally:
+            if hasattr(robot,'close'):robot.close()   # 반납(별도 프로세스) 전에 이 연결을 닫는다
     finally:
-        if hasattr(robot,'close'):robot.close()
+        if holding:pen_step('return',args,cfg)
 
 if __name__=='__main__':main()
