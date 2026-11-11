@@ -32,3 +32,41 @@ def test_modbus_read_skips_stale_write_echo():
     reply = body + g.crc16_modbus(body).to_bytes(2, 'little')
     proto = g._Protocol({'protocol': 'modbus', 'id': 1, 'registers': REG})
     assert proto.parse_position(echo + reply) == 620
+
+
+# ---------------------------------------------------------------- FlangeGripper (컨트롤러 없이)
+CFG = {'protocol': 'modbus', 'id': 1, 'registers': REG, 'open_position': 0, 'closed_position': 620,
+       'holding_min': 450, 'holding_max': 605, 'settle_s': 0, 'readback_host': '127.0.0.1'}
+
+
+def _fake(positions, cfg=CFG):
+    """DRL 을 실행하지 않고 position() 이 positions 를 차례로 돌려주는 FlangeGripper."""
+    grip = g.FlangeGripper.__new__(g.FlangeGripper)
+    grip.cfg, grip.baud, grip.proto = dict(cfg), 57600, g._Protocol(cfg)
+    grip.sent = []
+    grip._run = lambda packets, *a, **k: grip.sent.append(packets)
+    seq = iter(positions)
+    grip.position = lambda: next(seq)
+    return grip
+
+
+def test_drl_waits_after_open_and_retries_until_reply():
+    code = _fake([])._drl([g.modbus_write_single(1, 256, 1)])
+    lines = code.splitlines()
+    assert lines[1] == 'res0, rx0 = flange_serial_read(0.1)'          # 포트 연 직후 바로 쓰지 않음
+    assert lines[2] == f'for _try in range({g.FlangeGripper.RETRIES}):'
+    assert '    if res0 > 0:' in lines and '        break' in lines
+
+
+def test_open_checks_position_and_raises_when_not_moved():
+    assert _fake([300, 10]).open() == 10                                  # 늦게 열려도 다시 읽어 확인
+    with pytest.raises(RuntimeError, match='열리지 않음'):
+        _fake([580, 580, 580]).open()
+
+
+def test_close_detects_empty_hand_and_skips_check_without_readback():
+    assert _fake([560]).close() == 560
+    with pytest.raises(g.PenNotHeld):
+        _fake([618, 619, 619]).close()                                    # 끝까지 닫힘 = 빈 손
+    assert _fake([618]).close(check_held=False) == 618
+    assert _fake([], {**CFG, 'readback_host': None}).close() is None       # 위치를 못 읽는 설정이면 확인 생략

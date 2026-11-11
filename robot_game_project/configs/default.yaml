@@ -49,13 +49,13 @@ gripper:
     torque_enable: 256        # 40257
     goal_current: 275         # 40276
     goal_position: 282        # 40283 (FC16 2레지스터 [값, 0])
-    present_position: 290     # 추정값, 미확인
+    present_position: 290     # [실기] 2026-11-11 읽기로 확인 (목표 위치와 같은 값이 나옴)
   goal_current: 400
   open_position: 0
   closed_position: 620
-  holding_min: null
-  holding_max: null
+  holding_min: 450            # [실기] 회색 펜 부품을 물면 520~580 (2026-11-11 읽음). 이 범위 밖이면 못 잡은 것
+  holding_max: 605            #        빈 손으로 닫으면 620 근처까지 감
   settle_s: 0.8
   drl_timeout_s: 10
-  readback_host: null
+  readback_host: 110.120.1.3  # [실기] 컨트롤러에서 보이는 이 PC 의 IP (위치 읽기·열림/파지 확인용). PC 를 바꾸면 수정
   readback_port: 20002
