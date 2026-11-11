@@ -46,6 +46,9 @@ def _patch_dsr_msgs():
             srv.__all__.append('SetSingularityHandlingForce')
 
 POS_TOL_MM=3.0; JOINT_TOL_DEG=1.0
+MAX_DRAW_VEL=60.0; MAX_DRAW_ACC=300.0   # [실기] 그리기 속도 상한 (2026-11-11 사용자 요청으로 20→60mm/s)
+SPLINE_MAX_POINTS=100                  # movesx 한 번에 넣는 최대 점 수 (dsr_msgs2 pos_cnt 는 int8)
+MIN_SPLINE_STEP_MM=0.5                 # 이보다 가까운 연속 점은 버린다 (같은 점이 연달아 있으면 스플라인이 거부될 수 있음)
 STOP_STATES={3,5,6,9,10}   # SAFE_OFF, SAFE_STOP, EMERGENCY_STOP, SAFE_STOP2, SAFE_OFF2 (dsr_msgs2 GetRobotState)
 
 class GuardedDoosan:
@@ -72,12 +75,13 @@ class GuardedDoosan:
             if system!=0:  # [실기] 0=REAL, 1=VIRTUAL(에뮬레이터): 실기 클래스는 실제 컨트롤러에만 연결
                 raise PermissionError(f'Controller is not REAL (robot_system={system})')
             _patch_dsr_msgs()
-            from DSR_ROBOT2 import movej,movel,posj,posx,get_current_posx,get_current_posj,get_robot_state,change_operation_speed
+            from DSR_ROBOT2 import movej,movel,movesx,posj,posx,get_current_posx,get_current_posj,get_robot_state,change_operation_speed,DR_MVS_VEL_CONST
             # [실기] 컨트롤러 전체 속도 배율. DART 에서 10% 로 남아 있으면 모든 동작이 10배 느려진다(2026-11-10 실측)
             change_operation_speed(int(config.get('operation_speed_pct',100)))
         except BaseException:
             self.node.destroy_node(); rclpy.shutdown(); raise
         self.movej,self.movel,self.posj,self.posx=movej,movel,posj,posx
+        self.movesx,self.vel_const=movesx,DR_MVS_VEL_CONST
         self._posx_now,self._posj_now,self._state=get_current_posx,get_current_posj,get_robot_state
     def state(self):
         try: return self._state()
@@ -107,7 +111,7 @@ class GuardedDoosan:
         """
         if not path: return
         safe=float(self.cfg['safe_z_base_mm']); vel=float(self.cfg['speed_mm_s']); acc=float(self.cfg['accel_mm_s2'])
-        if not (0<vel<=20 and 0<acc<=50): raise ValueError('Restrict speed/acceleration during commissioning')
+        if not (0<vel<=MAX_DRAW_VEL and 0<acc<=MAX_DRAW_ACC): raise ValueError('Restrict speed/acceleration during commissioning')
         first=path[0].copy(); first[2]=safe
         self._line(first,vel,acc)
         for point in path:
@@ -118,8 +122,34 @@ class GuardedDoosan:
         """maze_csv 가 만든 '실측 기준' CSV 행을 순서대로 movel. 행마다 x,y,z,rx,ry,rz 를 사용(펜 올림/내림 Z 는 CSV 에 이미 반영).
         저속 제한은 draw() 와 동일. 오류가 나면 즉시 중단(예외) — 호출자가 home/정지 처리."""
         vel=float(self.cfg['speed_mm_s']); acc=float(self.cfg['accel_mm_s2'])
-        if not (0<vel<=20 and 0<acc<=50): raise ValueError('Restrict speed/acceleration during commissioning')
-        for r in rows:
-            pose=[r['x'],r['y'],r['z'],r['rx'],r['ry'],r['rz']]
-            self._line(pose,vel,acc)
+        if not (0<vel<=MAX_DRAW_VEL and 0<acc<=MAX_DRAW_ACC): raise ValueError('Restrict speed/acceleration during commissioning')
+        # [실기] 점마다 movel 로 멈췄다 가면 236점 미로에 2분 반이 걸렸다(2026-11-11). 펜을 내린 연속 구간은
+        # movesx(스플라인, 일정 속도)로 한 번에 지나가고, 펜 올림/내림 이동만 movel 로 한다.
+        pose=lambda r: [float(r['x']),float(r['y']),float(r['z']),float(r['rx']),float(r['ry']),float(r['rz'])]
+        i=0
+        while i<len(rows):
+            if rows[i]['pen']!='down':
+                self._line(pose(rows[i]),vel,acc); i+=1; continue
+            j=i
+            while j<len(rows) and rows[j]['pen']=='down': j+=1
+            seg=[pose(r) for r in rows[i:j]]
+            self._line(seg[0],vel,acc)                       # 펜 내리기 (시작점)
+            pts=[seg[0]]
+            for q in seg[1:]:
+                if sum((a-b)**2 for a,b in zip(q[:3],pts[-1][:3]))**.5>=MIN_SPLINE_STEP_MM: pts.append(q)
+            for k in range(1,len(pts),SPLINE_MAX_POINTS-1):  # 앞 묶음의 끝점에서 이어서 시작
+                self._spline(pts[k:k+SPLINE_MAX_POINTS-1],vel,acc)
+            i=j
+    def _spline(self, chunk, vel, acc):
+        """[실기] movesx + 바닥 하한 + 도착 확인 (_line 과 같은 검사)."""
+        if not chunk: return
+        floor=self.cfg.get('min_pen_z_base_mm')
+        if floor is not None and min(float(p[2]) for p in chunk)<float(floor):
+            raise ValueError(f'spline Z below min_pen_z_base_mm {floor}')
+        if len(chunk)==1:
+            self._line(chunk[0],vel,acc); return
+        self.movesx([self.posx(*p) for p in chunk],vel=vel,acc=acc,vel_opt=self.vel_const)
+        p=self._posx_now(); now=[float(v) for v in (p[0] if isinstance(p,tuple) else p)]
+        end=chunk[-1]; miss=sum((a-float(b))**2 for a,b in zip(now[:3],end[:3]))**.5
+        if miss>POS_TOL_MM: raise RuntimeError(f'Spline did not reach ({end[0]:.0f},{end[1]:.0f},{end[2]:.0f}): {miss:.0f}mm off')
     def close(self): self.node.destroy_node(); self.rclpy.shutdown()
