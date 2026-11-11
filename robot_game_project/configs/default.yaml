@@ -37,8 +37,23 @@ robot:
 gripper:
   enabled: false
   port: /dev/ttyUSB0
-  baud: 57600
+  baud: 57600                 # [실기] 2026-11-10 플랜지 시리얼로 닫기(620) 동작 확인
   id: 1
-  # Positions need manual verification from actual hardware setup.
-  open_position: null
-  closed_position: null
+  # [실기] 아래는 robot_games/calib/gripper.py(두산 플랜지 시리얼, robot_games.calib.calibrate gripper) 용.
+  # RH-P12-RN(A): Modbus RTU, 슬레이브 ID 1. 레지스터는 0부터 세는 번호(4xxxx - 40001)
+  backend: flange
+  protocol: modbus
+  registers:
+    torque_enable: 256        # 40257
+    goal_current: 275         # 40276
+    goal_position: 282        # 40283 (FC16 2레지스터 [값, 0])
+    present_position: 290     # 추정값, 미확인
+  goal_current: 400
+  open_position: 0
+  closed_position: 620
+  holding_min: null
+  holding_max: null
+  settle_s: 0.8
+  drl_timeout_s: 10
+  readback_host: null
+  readback_port: 20002
