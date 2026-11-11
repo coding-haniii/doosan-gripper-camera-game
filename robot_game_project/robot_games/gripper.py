@@ -198,6 +198,10 @@ DEFAULT_REGISTERS = {
 }
 
 
+class PenNotHeld(RuntimeError):
+    """닫았는데 그리퍼 위치가 펜 부품을 잡은 범위(holding_min~max) 밖."""
+
+
 def _require_positions(cfg):
     if cfg.get('open_position') is None or cfg.get('closed_position') is None:
         raise ValueError('gripper.open_position / closed_position 을 실물에서 교시하세요 (robot-calibrate gripper)')
@@ -206,6 +210,7 @@ def _require_positions(cfg):
 
 class FlangeGripper:
     """두산 플랜지 시리얼. DRL 스크립트를 실행하고 끝날 때까지 기다린다."""
+    RETRIES = 3
 
     def __init__(self, cfg, robot_system=0):
         """GuardedDoosan 으로 컨트롤러에 연결한 뒤에 만든다(DSR_ROBOT2 가 그 노드를 쓴다). robot_system 0=REAL."""
@@ -228,14 +233,18 @@ class FlangeGripper:
                  f'parity=DR_PARITY_NONE, stopbits=DR_STOPBITS_ONE)',
                  # [실기] 열자마자 쓰면 첫 패킷이 버려진다(2026-11-11 실측: 응답 없음 → 0.1초 뒤 쓰면 매번 응답)
                  'res0, rx0 = flange_serial_read(0.1)']
+        # [실기] 그래도 가끔 패킷 하나가 응답 없이 사라진다(2026-11-11 열기 명령 유실).
+        # 응답이 올 때까지 같은 패킷을 최대 RETRIES 번 보낸다. 토크·전류·목표 위치 쓰기와 읽기는 여러 번 보내도 결과가 같다.
         for k, p in enumerate(packets):
-            lines.append(f'flange_serial_write({p!r})')
-            if not (read_back and k == len(packets) - 1):
-                # 쓰기 명령의 응답을 읽어서 버린다. 남겨 두면 다음 읽기 응답 앞에 섞여 들어온다
-                lines.append('res0, rx0 = flange_serial_read(0.2)')
+            last_read = read_back and k == len(packets) - 1
+            var, wait = ('res', 1.0) if last_read else ('res0', 0.3)
+            lines += [f'for _try in range({self.RETRIES}):',
+                      f'    flange_serial_write({p!r})',
+                      f'    {var}, rx{"" if last_read else "0"} = flange_serial_read({wait})',   # 응답을 읽어 비운다
+                      f'    if {var} > 0:',
+                      '        break']
         if read_back:
             lines += [
-                'res, rx = flange_serial_read(1.0)',
                 f'sock = client_socket_open("{host}", {int(port)})',
                 'if res > 0:',
                 '    client_socket_write(sock, rx)',
@@ -262,10 +271,36 @@ class FlangeGripper:
     def open(self):
         self._run([self.proto.goal(int(self.cfg['open_position']))])
         time.sleep(float(self.cfg.get('settle_s', 0.8)))
+        # [실기] 명령이 유실돼도 모르고 지나가지 않도록, 위치를 읽을 수 있으면 실제로 열렸는지 확인
+        limit = int(self.cfg['open_position']) + int(self.cfg.get('open_tolerance', 60))
+        pos = self._wait_position(lambda p: p <= limit)
+        if pos is not None and pos > limit:
+            raise RuntimeError(f'그리퍼가 열리지 않음 (위치 {pos}, 기대 {limit} 이하)')
+        return pos
 
-    def close(self):
+    def close(self, check_held=True):
+        """닫고, 위치를 읽을 수 있으면 반환. holding_min~max 가 있으면 그 안인지 확인(밖이면 PenNotHeld)."""
         self._run([self.proto.goal(int(self.cfg['closed_position']))])
         time.sleep(float(self.cfg.get('settle_s', 0.8)))
+        lo, hi = self.cfg.get('holding_min'), self.cfg.get('holding_max')
+        if not (check_held and lo is not None and hi is not None):
+            return self._wait_position(lambda p: True)
+        pos = self._wait_position(lambda p: lo <= p <= hi)
+        if pos is not None and not (lo <= pos <= hi):
+            raise PenNotHeld(f'펜 부품을 잡지 못함: 그리퍼 위치 {pos} (허용 {lo}~{hi}, 끝까지 닫히면 빈 손)')
+        return pos
+
+    def _wait_position(self, ok, tries=3, interval_s=0.4):
+        """readback_host 가 없으면 None(확인 생략). 있으면 ok(위치)가 될 때까지 몇 번 읽고 마지막 위치를 반환."""
+        if not self.cfg.get('readback_host'):
+            return None
+        pos = None
+        for i in range(tries):
+            pos = self.position()
+            if ok(pos):
+                break
+            time.sleep(interval_s)
+        return pos
 
     def position(self):
         host = self.cfg.get('readback_host')
