@@ -62,7 +62,12 @@ def find_openings(board, invert=False, threshold=0, min_gap=10):
     pick_endpoints 는 이미지 모서리에 가까운 흰 점을 골라서, 크롭 여백(벽 바깥)을 시작·도착점으로 잡고
     미로 바깥 테두리를 도는 경로를 냈다(2026-11-11 실측). 그래서 네 변마다 바깥 벽의 중심선을 찾고, 그 선 위에서
     벽이 min_gap 픽셀 이상 끊긴 구간을 입구·출구로 본다.
-    반환: (start, goal, inside) — start/goal 은 벽 안쪽으로 들어간 점, inside 는 (x0, y0, x1, y1) 바깥 벽 중심선 상자.
+    반환: (start, goal, inside, start_ext, goal_ext)
+      start/goal  : 구멍에서 벽 안쪽으로 들어간 점 (BFS 시작·끝)
+      inside      : (x0, y0, x1, y1) 바깥 벽 중심선 상자 (이 밖은 막는다)
+      start_ext   : [구멍 바깥 점, 구멍 가운데] — 경로 앞에 붙인다 (입구 밖에서 시작)
+      goal_ext    : [구멍 가운데, 구멍 바깥 점] — 경로 뒤에 붙인다 (출구 밖에서 끝)
+    바깥 점은 크롭 이미지 밖(음수 좌표)일 수 있다. trajectory 가 크롭 오프셋을 더해 보드 전체 좌표로 바꾼다.
     두 곳을 못 찾으면 None."""
     wall = 1 - candidate_walkable(board, invert=invert, threshold=threshold, clearance=0)
     h, w = wall.shape
@@ -80,6 +85,7 @@ def find_openings(board, invert=False, threshold=0, min_gap=10):
         return None
     y0, y1, x0, x1 = top, h - 1 - bot, left, w - 1 - right
     inward = 3 * max(top, bot, left, right, 3)      # 벽 두께보다 충분히 안쪽
+    outward = inward                                # 구멍 바깥으로 나가는 거리 (벽 중심선 기준)
 
     gaps = []
     def scan(line, fixed, axis, normal, lo, hi):
@@ -94,7 +100,9 @@ def find_openings(board, invert=False, threshold=0, min_gap=10):
                     mid = (run + end) // 2
                     p = (mid, fixed) if axis == 'x' else (fixed, mid)
                     q = (p[0] + normal[0] * inward, p[1] + normal[1] * inward)
-                    gaps.append((end - run + 1, (int(np.clip(q[0], 0, w - 1)), int(np.clip(q[1], 0, h - 1)))))
+                    o = (p[0] - normal[0] * outward, p[1] - normal[1] * outward)
+                    gaps.append((end - run + 1, (int(np.clip(q[0], 0, w - 1)), int(np.clip(q[1], 0, h - 1))),
+                                 (int(p[0]), int(p[1])), (int(o[0]), int(o[1]))))
                 run = None
     scan(wall[y0, :], y0, 'x', (0, 1), x0, x1)
     scan(wall[y1, :], y1, 'x', (0, -1), x0, x1)
@@ -102,9 +110,10 @@ def find_openings(board, invert=False, threshold=0, min_gap=10):
     scan(wall[:, x1], x1, 'y', (-1, 0), y0, y1)
     if len(gaps) < 2:
         return None
-    pts = [p for _, p in sorted(gaps, reverse=True)[:2]]
-    pts.sort(key=lambda p: p[0] + p[1])             # 왼쪽 위에 가까운 쪽이 시작
-    return pts[0], pts[1], (x0, y0, x1, y1)
+    two = sorted(gaps, key=lambda g: g[0], reverse=True)[:2]
+    two.sort(key=lambda g: g[1][0] + g[1][1])       # 왼쪽 위에 가까운 쪽이 시작
+    (_, s_in, s_gap, s_out), (_, g_in, g_gap, g_out) = two
+    return s_in, g_in, (x0, y0, x1, y1), [s_out, s_gap], [g_gap, g_out]
 
 
 def pick_endpoints(walk):
@@ -183,6 +192,29 @@ def solve(board, start, goal, *, invert=False, threshold=0, clearance=2, inside=
     if dense[-1] != waypoints[-1]:
         waypoints.append(dense[-1])
     return waypoints, walk
+
+
+def solve_centered(board, start, goal, *, invert=False, threshold=0, inside=None, min_clearance=1, max_clearance=40):
+    """[실기] 벽에서 최대한 떨어진 경로. clearance=1 이면 최단 경로가 모서리마다 벽에 붙어(약 0.4mm) 펜이 벽 선 위를
+    겹쳐 그렸다(2026-11-11). 시작·도착이 이어지는 가장 큰 clearance 를 이분 탐색으로 찾아 그 값으로 푼다.
+    반환: (path, walk, clearance)"""
+    def attempt(c):
+        try:
+            return solve(board, start, goal, invert=invert, threshold=threshold, clearance=c, inside=inside)
+        except ValueError:
+            return None
+    best = attempt(min_clearance)
+    if best is None:
+        raise ValueError('No traversable route even with minimum clearance.')
+    lo, hi, best_c = min_clearance, max_clearance, min_clearance
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        r = attempt(mid)
+        if r is not None:
+            lo, best, best_c = mid, r, mid
+        else:
+            hi = mid - 1
+    return best[0], best[1], best_c
 
 
 def render(board, path):
@@ -339,7 +371,7 @@ def main(argv=None):
     if args.robot_mode != 'mock':
         raise PermissionError('Physical motion disabled: camera-to-robot calibration and safety are NOT commissioned')
 
-    crop_off, inside = (0, 0), None
+    crop_off, inside, start_ext, goal_ext = (0, 0), None, [], []
     if args.source == 'demo':
         board, start, goal = make_sample(seed=args.seed)
         full_shape = board.shape
@@ -363,7 +395,7 @@ def main(argv=None):
         walk_temp = candidate_walkable(board, invert=args.invert, threshold=args.threshold, clearance=args.clearance)
         found = find_openings(board, invert=args.invert, threshold=args.threshold)
         if found is not None:
-            auto_s, auto_g, inside = found
+            auto_s, auto_g, inside, start_ext, goal_ext = found
             print(f'[MAZE] 입구 {auto_s} → 출구 {auto_g}')
         else:
             print('[MAZE] 입구·출구를 찾지 못함 → 이미지 모서리 기준 자동 선택')
@@ -379,8 +411,15 @@ def main(argv=None):
                                    clearance=args.clearance) * 255)
     print(f'[MOCK] start={start} goal={goal} board={board.shape[1]}x{board.shape[0]}')
 
-    path, walk = solve(board, start, goal, invert=args.invert, threshold=args.threshold, clearance=args.clearance,
-                       inside=None if (args.start or args.goal) else inside)
+    if args.source != 'demo' and args.clearance <= 1:   # [실기] 기본값이면 통로 가운데로 가도록 clearance 자동
+        path, walk, used = solve_centered(board, start, goal, invert=args.invert, threshold=args.threshold,
+                                          inside=None if (args.start or args.goal) else inside)
+        print(f'[MAZE] 벽에서 떨어진 거리 {used}px 로 풀이')
+        if not (args.start or args.goal):          # [실기] 입구 구멍 밖에서 시작해 출구 구멍 밖에서 끝나게
+            path = [tuple(p) for p in start_ext] + list(path) + [tuple(p) for p in goal_ext]
+    else:
+        path, walk = solve(board, start, goal, invert=args.invert, threshold=args.threshold, clearance=args.clearance,
+                           inside=None if (args.start or args.goal) else inside)
     cv2.imwrite(str(out / 'paper_maze_walkable.png'), walk * 255)
     cv2.imwrite(str(out / 'paper_maze_solved.png'), render(board, path))
     plan = trajectory(path, full_shape, crop_off)
