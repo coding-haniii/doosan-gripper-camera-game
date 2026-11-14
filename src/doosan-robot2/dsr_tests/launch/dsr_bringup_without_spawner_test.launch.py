@@ -1,0 +1,139 @@
+# 
+#  dsr_test
+#  Author: Minsoo Song (minsoo.song@doosan.com)
+#  
+#  Copyright (c) 2025 Doosan Robotics
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+# 
+
+
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import Command, FindExecutable, PathJoinSubstitution, LaunchConfiguration
+from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
+from launch.actions import RegisterEventHandler,DeclareLaunchArgument, TimerAction
+from launch.event_handlers import OnProcessExit
+from launch.conditions import IfCondition
+from dsr_bringup2.utils import read_update_rate
+
+def generate_launch_description():
+    ARGUMENTS =[ 
+        DeclareLaunchArgument('name',  default_value = 'dsr01',     description = 'NAME_SPACE'     ),
+        DeclareLaunchArgument('host',  default_value = '127.0.0.1', description = 'ROBOT_IP'       ),
+        DeclareLaunchArgument('port',  default_value = '12345',     description = 'ROBOT_PORT'     ),
+        DeclareLaunchArgument('mode',  default_value = 'virtual',   description = 'OPERATION MODE' ),
+        DeclareLaunchArgument('model', default_value = 'm1013',     description = 'ROBOT_MODEL'    ),
+        DeclareLaunchArgument('color', default_value = 'white',     description = 'ROBOT_COLOR'    ),
+        DeclareLaunchArgument('rt_host',    default_value = '',     description = 'ROBOT_RT_IP'    ),
+        DeclareLaunchArgument('rviz',   default_value = 'false',     description = 'Start RViz2'    ),
+        DeclareLaunchArgument('start_emulator',   default_value = 'false',     description = 'Start emulator'    ),
+        DeclareLaunchArgument('tf_prefix', default_value = '',      description = 'PREFIX FOR TF FRAME NAMES (e.g. "dsr01/")'),
+    ]
+    rviz = LaunchConfiguration("rviz")
+    start_emulator = LaunchConfiguration("start_emulator")
+    
+    update_rate = str(read_update_rate())
+
+    # Get URDF via xacro
+    robot_description_content = Command(
+        [
+            PathJoinSubstitution([FindExecutable(name="xacro")]),
+            " ",
+            PathJoinSubstitution(
+                [
+                    FindPackageShare("dsr_description2"),
+                    "xacro",
+                    LaunchConfiguration('model'),
+                ]
+            ),
+            ".urdf.xacro",
+            " host:=", LaunchConfiguration('host'),
+            " rt_host:=", LaunchConfiguration('rt_host'),
+            " port:=", LaunchConfiguration('port'),
+            " mode:=", LaunchConfiguration('mode'),
+            " model:=", LaunchConfiguration('model'),
+            " update_rate:=", update_rate,
+            " color:=", LaunchConfiguration('color'),
+        ]
+    )
+
+    robot_description = {"robot_description": robot_description_content}
+
+    robot_controllers = PathJoinSubstitution(
+        [
+            FindPackageShare("dsr_controller2"),
+            "config",
+            "dsr_controller2.yaml",
+        ]
+    )
+    
+    run_emulator_node = Node(
+        package="dsr_bringup2",
+        executable="run_emulator",
+        namespace=LaunchConfiguration('name'),
+        parameters=[
+            {"name":    LaunchConfiguration('name')  }, 
+            {"rate":    100         },
+            {"standby": 5000        },
+            {"command": True        },
+            {"host":    LaunchConfiguration('host')  },
+            {"port":    LaunchConfiguration('port')  },
+            {"mode":    LaunchConfiguration('mode')  },
+            {"model":   LaunchConfiguration('model') },
+            {"gripper": "none"      },
+            {"mobile":  "none"      },
+            {"rt_host":  LaunchConfiguration('rt_host')      },
+            #parameters_file_path       # 파라미터 설정을 동일이름으로 launch 파일과 yaml 파일에서 할 경우 yaml 파일로 셋팅된다.    
+        ],
+        output="screen",
+        condition=IfCondition(start_emulator),
+    )
+
+    control_node = Node(
+        package="controller_manager",
+        executable="ros2_control_node",
+        namespace=LaunchConfiguration('name'),
+        parameters=[robot_description, robot_controllers],
+        output="both",
+    )
+
+    robot_state_pub_node = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='robot_state_publisher',
+        namespace=LaunchConfiguration('name'),
+        output='both',
+        parameters=[{'frame_prefix': LaunchConfiguration('tf_prefix')}, robot_description])
+    
+    rviz_config_file = PathJoinSubstitution(
+        [FindPackageShare("dsr_description2"), "rviz", "default.rviz"]
+    )
+    rviz_node = Node(
+        package="rviz2",
+        executable="rviz2",
+        namespace=LaunchConfiguration('name'),
+        name="rviz2",
+        output="log",
+        arguments=["-d", rviz_config_file],
+        condition=IfCondition(rviz),
+    )
+
+    nodes = [
+        run_emulator_node,
+        robot_state_pub_node,
+        rviz_node,
+        control_node,
+    ]
+
+    return LaunchDescription(ARGUMENTS + nodes)

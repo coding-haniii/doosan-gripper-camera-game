@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="e0509_with_gripper">
+
+  <!-- Gazebo 일 때 true (gazebo.launch.py 가 use_gazebo:=true use_sim:=true 로 넘김) -->
+  <xacro:arg name="use_sim" default="false"/>
+
+  <!-- 1) 두산 공식 E0509 (팔 + world + ros2_control, use_gazebo:=true 면 Gazebo 용) -->
+  <xacro:include filename="$(find dsr_description2)/xacro/e0509.urdf.xacro"/>
+
+  <!-- 2) ROBOTIS 공식 RH-P12-RN-A: 모양 / Gazebo 물성 / ros2_control -->
+  <xacro:include filename="$(find rh_p12_rn_a_description)/urdf/rh_p12_rn_a.xacro"/>
+  <xacro:include filename="$(find rh_p12_rn_a_description)/gazebo/rh_p12_rn_a.gazebo.xacro"/>
+  <xacro:include filename="$(find rh_p12_rn_a_description)/ros2_control/rh_p12_rn_a.ros2_control.xacro"/>
+  <xacro:rh_p12_rn_a prefix="gripper_"/>
+
+  <!-- 3) link_6 에 고정 -->
+  <joint name="gripper_attach_joint" type="fixed">
+    <parent link="link_6"/>
+    <child link="gripper_rh_p12_rn_base"/>
+    <origin xyz="0 0 0" rpy="0 0 1.5708"/>
+  </joint>
+
+  <!-- 4) Gazebo 일 때만: 그리퍼 원본의 Gazebo 물성 + ros2_control (rh_r1 하나로 제어, 나머지 3개는 mimic)
+          실로봇/가상에서 이 부분을 쓰면 Dynamixel(USB) 하드웨어를 찾으므로 Gazebo 에서만 켬 -->
+  <xacro:if value="$(arg use_sim)">
+    <xacro:rh_p12_rn_a_gazebo prefix="gripper_"/>
+    <xacro:rh_p12_rn_a_system name="gripper_gz" prefix="gripper_"/>
+  </xacro:if>
+
+</robot>
