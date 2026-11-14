@@ -185,6 +185,10 @@ class Rules:
         # 숫자 토큰은 제외: '= H3/3' 같은 노이즈 속 숫자가 카드로 오인되는 것을 막음
         hits = {}
         for t in re.findall(r'[A-Z]+|[가-힣]+', str(text).upper()):
+            # [실기] 잡음 섞인 문장 속 영문 두 글자(IT, TO, TI ...)가 학습 별칭에 우연히 걸려 미로 카드를 종료로
+            # 읽었다(2026-11-14 'MILO ... It ...' -> exit). 문장 안에서는 짧은 영문 토큰을 정식 키워드일 때만 쓴다
+            if len(t) < 3 and t.isascii() and t not in CARD_MAP:
+                continue
             g, k = self._match_token(t)
             if g:
                 hits[g] = k

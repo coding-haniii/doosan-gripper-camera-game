@@ -269,11 +269,29 @@ class FlangeGripper:
         lines.append('flange_serial_close()')
         return '\n'.join(lines)
 
+    def _ensure_autonomous(self):
+        """[실기] DRL 은 자동 모드에서만 돈다. 게임을 강제 종료(터미널 닫기)한 뒤 그리퍼 DRL 이 시간 초과로 멈추고
+        로봇이 수동 모드로 남아 펜 반납이 계속 'drl_script_run 실패' 였다(2026-11-14). 수동이면 자동으로 바꾼다(동작 없음)."""
+        dr = self.dr
+        get_mode, set_mode = getattr(dr, 'get_robot_mode', None), getattr(dr, 'set_robot_mode', None)
+        auto = getattr(dr, 'ROBOT_MODE_AUTONOMOUS', 1)
+        if get_mode is None or set_mode is None:
+            return
+        try:
+            mode = get_mode()
+        except Exception:
+            return
+        if mode != auto:
+            print(f'[GRIPPER] 로봇이 수동 모드({mode}) → 자동 모드로 바꿈 (DRL 실행에 필요)', flush=True)
+            if set_mode(auto) != 0:
+                raise RuntimeError('로봇을 자동 모드로 바꾸지 못함 — 티치 펜던트에서 자동 모드로 바꾸세요')
+
     def _start_drl(self, code, timeout_s=5.0, tries=3):
         """[실기] DSR_ROBOT2.drl_script_run 은 응답을 무한정 기다린다. 연결 직후 첫 요청이 응답 없이 멈춘 일이
         2026-11-11 세 번 있었다(컨트롤러 쪽에서는 실행 안 됨) → 시간 제한을 두고 다시 요청한다."""
         import rclpy
         dr = self.dr
+        self._ensure_autonomous()
         client, node = getattr(dr, '_ros2_drl_start', None), getattr(dr, 'g_node', None)
         if client is None or node is None:                    # 테스트·다른 버전: 원래 함수
             return dr.drl_script_run(self.system, code) == 0

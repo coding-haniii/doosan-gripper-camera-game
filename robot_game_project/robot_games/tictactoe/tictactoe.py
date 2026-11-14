@@ -8,9 +8,9 @@ import time
 import cv2
 import numpy as np
 
-from .camera_select import choose_camera
+from .camera_select import ReconnectingCamera
 from .motion import MockRobot
-from .paper_maze import detect_markers, perspective_board
+from .paper_maze import detect_marker_corners, detect_markers, perspective_board
 from .paper_tictactoe import cell_ink, detect_human_o, x_strokes
 from .tictactoe import best_move, outcome, render_board
 from .vision import tic_board_from_image
@@ -22,6 +22,7 @@ OUTPUT = Path(__file__).resolve().parents[2] / 'out/tictactoe_result.png'
 CELL = 200
 STABLE_SECONDS = .7
 PREVIEW_SECONDS = .9
+RESULT_SECONDS = 5.0      # [실기] 결과 화면을 보여 주는 시간. 그 뒤 앱이 펜을 반납하고 home 으로 간다
 # [실기] 로봇이 X 를 종이에 그리는 경로 (mock 이면 화면에만)
 ROOT = Path(__file__).resolve().parents[2]
 FIELD_CALIB = ROOT / 'configs/field/camera_robot_calibration.json'   # 마커별 실측 로봇 좌표 (펜 끝 터치)
@@ -32,6 +33,19 @@ ROBOT_LABEL = 'Robot X: screen only'
 
 def grid_corners(frame):
     """Find a closed quadrilateral containing two grid lines in each direction."""
+    corners = _grid_corners(frame)
+    if corners is None:
+        # [실기] 격자 종이가 밀려 테두리가 ArUco 마커에 닿으면 윤곽이 마커와 합쳐져 못 찾는다(2026-11-14).
+        # 마커의 검은 사각형만(8% 여유) 흰색으로 지우고 다시 찾는다. 더 넓게 지우면 옆 격자 선까지 지워진다
+        cleared = frame.copy()
+        for c in detect_marker_corners(frame).values():
+            center = c.mean(axis=0)
+            cv2.fillConvexPoly(cleared, np.int32(center + (c - center) * 1.08), (255, 255, 255))
+        corners = _grid_corners(cleared)
+    return corners
+
+
+def _grid_corners(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     ink = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                 cv2.THRESH_BINARY_INV, 31, 10)
@@ -47,9 +61,18 @@ def grid_corners(frame):
             break
         if area > .95 * gray.size:
             continue
-        quad = cv2.approxPolyDP(contour, .025 * cv2.arcLength(contour, True), True)
-        if len(quad) != 4 or not cv2.isContourConvex(quad):
+        # [실기] 테이프·종이 끝 선이 테두리에 붙으면 꼭짓점이 늘거나 모서리가 틀어져 격자를 놓친다(초록 테두리 깜빡임).
+        # 윤곽을 채운 뒤 열림 연산으로 가는 꼬리만 잘라 사각형으로 근사한다(깨끗한 격자에는 영향 없음).
+        mask = np.zeros_like(closed)
+        cv2.drawContours(mask, [contour], -1, 255, -1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
+        found, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not found:
             continue
+        trimmed = max(found, key=cv2.contourArea)
+        quad = cv2.approxPolyDP(trimmed, .025 * cv2.arcLength(trimmed, True), True)
+        if len(quad) != 4 or not cv2.isContourConvex(quad) or cv2.contourArea(quad) < minimum_area:
+            continue                                   # [실기] 잘라낸 뒤 작아진 사각형은 격자가 아님
         points = quad.reshape(4, 2).astype(np.float32)
         sums = points.sum(axis=1)
         differences = points[:, 1] - points[:, 0]
@@ -57,7 +80,10 @@ def grid_corners(frame):
         if len(set(order)) != 4:
             continue
         points = points[order]
-        grid, _ = perspective_board(ink, points, 300, 300)
+        try:
+            grid, _ = perspective_board(ink, points, 300, 300)
+        except ValueError:                             # [실기] 납작한 후보 하나 때문에 게임 전체가 죽었음(2026-11-14)
+            continue
         # Allow for slightly uneven spacing or slanted hand-drawn grid lines.
         bands = [grid[10:-10, p-18:p+19] for p in (100, 200)]
         bands += [grid[p-18:p+19, 10:-10].T for p in (100, 200)]
@@ -83,7 +109,8 @@ class StableObservation:
 
 
 def close_enough(first, second):
-    return float(np.linalg.norm(first - second, axis=1).max()) <= 4
+    # [실기] 4px 는 격자(약 150px)에 비해 너무 빡빡해 모서리가 프레임마다 5~7px 흔들리면 진행이 멈췄다(2026-11-14)
+    return float(np.linalg.norm(first - second, axis=1).max()) <= 8
 
 
 def read_frame(camera):
@@ -177,6 +204,8 @@ def wait_for_o(camera, corners, matrix, before, board):
         except ValueError as error:
             if str(error) == 'Ink in a used cell':
                 message = 'That cell is used. Remove the new mark to continue'
+            else:   # [실기] 왜 O 를 안 받는지 화면에 보여 준다(전에는 'Your turn' 만 떠서 멈춘 것처럼 보였음)
+                message = f'Not accepted yet: {error}'
         ready = stable.update(move, lambda previous, current: previous == current)
         if move is not None:
             message = f'Checking O: row {move[0]+1}, col {move[1]+1}'
@@ -235,7 +264,7 @@ class RobotX:
         self.robot.home()                                     # 카메라 시야에서 비킴
 
 
-def refresh_board(camera, corners, matrix, before, move, timeout=10.0):
+def refresh_board(camera, corners, matrix, before, move, timeout=10.0):   # move: 호출 호환용(쓰지 않음)
     """[실기] 로봇이 X 를 그리고 비킨 뒤 보드 이미지를 다시 찍는다. 새 X 잉크가 들어간 이미지를 기준으로 삼아야
     new_human_move 가 'Ink in a used cell' 로 사람 O 를 막지 않는다."""
     for _ in range(10):                                       # 로봇이 움직이는 동안 쌓인 이전 프레임 버림
@@ -246,10 +275,8 @@ def refresh_board(camera, corners, matrix, before, move, timeout=10.0):
         current = grid_corners(frame)
         if current is not None and close_enough(corners, current):
             image = cv2.warpPerspective(frame, matrix, before.shape[1::-1])
-            row, col = move
-            added = cv2.bitwise_and(cell_ink(image, row, col), cv2.bitwise_not(cell_ink(before, row, col)))
-            if cv2.countNonZero(added) < 160:
-                print('[TIC] 경고: 로봇이 그린 X 가 카메라에 잘 안 보입니다 (펜 높이·잉크 확인)', flush=True)
+            # [실기] 로봇 X 는 로봇이 그린 것이라 카메라로 다시 확인하지 않는다. 가는 펜 선은 카메라에 거의 안 보여
+            # '안 보인다' 경고가 매번 떠서 뺐다(2026-11-14). 이 이미지는 다음 O 판정의 기준으로만 쓴다
             return image
         show(frame, 'Robot moved away - looking for the board again')
     raise RuntimeError('로봇이 그린 뒤 격자를 다시 찾지 못함 (팔이 가리거나 종이가 움직임)')
@@ -274,12 +301,17 @@ def show_result(board, result):
     print(f'[TIC] {message}', flush=True)
     image = cv2.copyMakeBorder(render_board(board), 75, 0, 0, 0, cv2.BORDER_CONSTANT,
                                value=(245, 245, 245))
-    cv2.putText(image, f'{message}  |  Q: close', (16, 47), cv2.FONT_HERSHEY_SIMPLEX,
+    cv2.putText(image, f'{message}  |  pen back in {RESULT_SECONDS:g}s', (16, 47), cv2.FONT_HERSHEY_SIMPLEX,
                 .85, (35, 35, 35), 2, cv2.LINE_AA)
     cv2.namedWindow(RESULT_WINDOW, cv2.WINDOW_NORMAL)
     cv2.imshow(RESULT_WINDOW, image)
-    while True:
-        check_quit(RESULT_WINDOW)
+    # [실기] Q 를 누를 때까지 기다리면 펜 반납·home 이 그만큼 밀린다(2026-11-14) → 잠깐 보여 주고 끝낸다
+    until = time.monotonic() + RESULT_SECONDS
+    try:
+        while time.monotonic() < until:
+            check_quit(RESULT_WINDOW)
+    except KeyboardInterrupt:
+        pass                                           # Q 나 창 닫기 = 바로 다음(펜 반납)으로
 
 
 def play(camera, first=None, make_drawer=None):
@@ -326,8 +358,8 @@ def run(args, robot, config):
         return
 
     settings = config['camera']
-    index = choose_camera(int(settings.get('index', 0)))   # [실기] RealSense 컬러를 자동으로 (설정 index 는 fallback)
-    camera = cv2.VideoCapture(index)
+    camera = ReconnectingCamera(int(settings.get('index', 0)))   # [실기] RealSense 컬러 자동 + 끊기면 다시 연결
+    index = camera.index
     try:
         if not camera.isOpened():
             raise RuntimeError(f"Cannot reopen camera /dev/video{index}")

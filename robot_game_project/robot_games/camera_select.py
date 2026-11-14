@@ -61,12 +61,78 @@ def can_read(index, need_color=True, tries=3):
 
 
 def choose_camera(fallback=0, devices=VIDEO_DEVICES, reader=can_read):
-    """쓸 카메라 번호. RealSense 컬러를 우선, 없으면 fallback. 둘 다 안 되면 RuntimeError."""
-    for index in realsense_candidates(devices):
+    """쓸 카메라 번호. RealSense 컬러를 우선, RealSense 가 연결돼 있지 않을 때만 fallback. 안 되면 RuntimeError."""
+    candidates = realsense_candidates(devices)
+    for index in candidates:
         if reader(index):
             print(f'[CAMERA] RealSense 컬러: /dev/video{index}', flush=True)
             return index
+    if candidates:
+        # [실기] RealSense 가 꽂혀 있는데 못 읽으면(다른 프로그램이 사용 중) 노트북 내장 카메라로 넘어가지 않는다.
+        # 2026-11-14 컨트롤 센터 미리보기가 내장 카메라(사람 얼굴)를 보여 줌 → 게임·보정이 엉뚱한 영상을 쓰면 안 됨
+        raise RuntimeError(f'RealSense(/dev/video{candidates}) 영상을 읽지 못함 — 다른 프로그램이 카메라를 쓰고 있는지 확인')
     if reader(fallback, need_color=False):
         print(f'[CAMERA] RealSense 컬러를 찾지 못함 → 기본 카메라 /dev/video{fallback}', flush=True)
         return fallback
     raise RuntimeError(f'쓸 수 있는 카메라가 없음 (RealSense 컬러, /dev/video{fallback} 모두 실패)')
+
+
+class ReconnectingCamera:
+    """[실기] cv2.VideoCapture 대신 쓴다. RealSense 가 USB 오류로 끊겼다 다시 붙으면(번호가 video6↔7 로 바뀌기도 함)
+    read() 실패 때 카메라를 다시 찾아 열고 이어서 읽는다. 2026-11-14 게임 도중 끊기면 게임이 그대로 끝났다.
+    wait_s 동안 다시 붙지 않으면 (False, None) — 호출하는 쪽의 기존 오류 처리로 넘어간다."""
+
+    def __init__(self, fallback=0, width=None, height=None, wait_s=60.0, chooser=None, opener=None, sleep=None):
+        import time
+        self._fallback, self._size, self._wait_s = fallback, (width, height), wait_s
+        self._choose = chooser or choose_camera
+        self._open_cap = opener or (lambda i: cv2.VideoCapture(i, cv2.CAP_V4L2))
+        self._sleep, self._now = sleep or time.sleep, time.monotonic
+        self.index = self._choose(fallback)
+        self._cap = self._open(self.index)
+
+    def _open(self, index):
+        cap = self._open_cap(index)
+        for value, prop in zip(self._size, (cv2.CAP_PROP_FRAME_WIDTH, cv2.CAP_PROP_FRAME_HEIGHT)):
+            if value:
+                cap.set(prop, int(value))
+        return cap
+
+    def set(self, prop, value):
+        if prop == cv2.CAP_PROP_FRAME_WIDTH:
+            self._size = (value, self._size[1])
+        elif prop == cv2.CAP_PROP_FRAME_HEIGHT:
+            self._size = (self._size[0], value)
+        return self._cap.set(prop, value)
+
+    def get(self, prop):
+        return self._cap.get(prop)
+
+    def isOpened(self):
+        return self._cap.isOpened()
+
+    def release(self):
+        self._cap.release()
+
+    def read(self):
+        ok, frame = self._cap.read() if self._cap.isOpened() else (False, None)
+        if ok and frame is not None:
+            return ok, frame
+        print('[CAMERA] 영상이 끊김 → 다시 연결 시도', flush=True)
+        self._cap.release()
+        until = self._now() + self._wait_s
+        while self._now() < until:
+            try:
+                self.index = self._choose(self._fallback)
+                self._cap = self._open(self.index)
+                for _ in range(5):                      # 다시 붙은 직후 몇 장은 비어 있을 수 있음
+                    ok, frame = self._cap.read()
+                    if ok and frame is not None:
+                        print(f'[CAMERA] 다시 연결됨: /dev/video{self.index}', flush=True)
+                        return ok, frame
+                self._cap.release()
+            except RuntimeError:
+                pass
+            self._sleep(2.0)
+        print(f'[CAMERA] {self._wait_s:.0f}초 동안 다시 연결하지 못함', flush=True)
+        return False, None
