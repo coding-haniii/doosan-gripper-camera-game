@@ -94,9 +94,9 @@ def find_holder(frame, marker_id, H):
 def capture_holder(cfg, H=None):
     """카메라 한 장으로 거치대 마커 위치 (x, y, yaw). 로봇이 움직이기 전에 부르고 카메라는 바로 닫는다."""
     import cv2
-    from .camera_select import choose_camera
+    from .camera_select import ReconnectingCamera
     cam = cfg.get('camera') or {}
-    cap = cv2.VideoCapture(choose_camera(int(cam.get('index', 0))), cv2.CAP_V4L2)
+    cap = ReconnectingCamera(int(cam.get('index', 0)))      # [실기] 끊기면 다시 연결
     try:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(cam.get('width', 1280)))
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(cam.get('height', 720)))
