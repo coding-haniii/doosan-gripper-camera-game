@@ -74,8 +74,11 @@ def find_openings(board, invert=False, threshold=0, min_gap=10):
     depth = max(4, min(h, w) // 8)
 
     def best_line(profile_fn, n):
+        # [실기] 가장 바깥쪽에서 최대값의 90% 이상인 선. argmax 는 바깥 벽이 짧은 변(모서리 입구)에서
+        # 안쪽 벽을 바깥 벽으로 골라 안쪽 통로를 막고 시작점을 150px 밖으로 보냈다(2026-11-14).
         fr = [profile_fn(k).mean() for k in range(n)]
-        k = int(np.argmax(fr))
+        top_f = max(fr)
+        k = next(i for i, f in enumerate(fr) if f >= 0.9 * top_f)
         return k, fr[k]
     top, ft = best_line(lambda k: wall[k, :], depth)
     bot, fb = best_line(lambda k: wall[h - 1 - k, :], depth)
@@ -108,9 +111,15 @@ def find_openings(board, invert=False, threshold=0, min_gap=10):
     scan(wall[y1, :], y1, 'x', (0, -1), x0, x1)
     scan(wall[:, x0], x0, 'y', (1, 0), y0, y1)
     scan(wall[:, x1], x1, 'y', (-1, 0), y0, y1)
+    # [실기] 모서리가 열린 입구는 두 변(위·왼쪽 등)에 구멍이 하나씩 잡힌다 → 가까운 구멍끼리는 긴 것 하나만
+    merged = []
+    for g in sorted(gaps, key=lambda g: g[0], reverse=True):
+        if all(abs(g[2][0] - m[2][0]) + abs(g[2][1] - m[2][1]) > g[0] + m[0] for m in merged):
+            merged.append(g)
+    gaps = merged
     if len(gaps) < 2:
         return None
-    two = sorted(gaps, key=lambda g: g[0], reverse=True)[:2]
+    two = gaps[:2]
     two.sort(key=lambda g: g[1][0] + g[1][1])       # 왼쪽 위에 가까운 쪽이 시작
     (_, s_in, s_gap, s_out), (_, g_in, g_gap, g_out) = two
     return s_in, g_in, (x0, y0, x1, y1), [s_out, s_gap], [g_gap, g_out]
@@ -329,10 +338,11 @@ def auto_detect_board_corners(frame):
 
 
 def capture(camera_index=None):
-    if camera_index is None:                      # [실기] 번호를 안 주면 실행할 때마다 RealSense 컬러를 찾는다
-        from .camera_select import choose_camera
-        camera_index = choose_camera()
-    cap = cv2.VideoCapture(camera_index)
+    if camera_index is None:                      # [실기] 번호를 안 주면 실행할 때마다 RealSense 컬러를 찾고, 끊기면 다시 연결
+        from .camera_select import ReconnectingCamera
+        cap = ReconnectingCamera()
+    else:
+        cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
         raise RuntimeError(f'Cannot open webcam {camera_index}')
     # [실기] 카드·틱택토와 같이 default.yaml 의 camera.width/height 를 쓴다 (1280x720: 1px ≈ 1mm, 보정과 같은 해상도)
@@ -406,6 +416,9 @@ def main(argv=None):
         found = find_openings(board, invert=args.invert, threshold=args.threshold)
         if found is not None:
             auto_s, auto_g, inside, start_ext, goal_ext = found
+            ox, oy = crop_off                                       # [실기] 구멍 바깥 점이 보드(0~1) 밖으로 나가지 않게
+            fit = lambda p: (int(np.clip(p[0], -ox, full_shape[1] - 1 - ox)), int(np.clip(p[1], -oy, full_shape[0] - 1 - oy)))
+            start_ext, goal_ext = [fit(p) for p in start_ext], [fit(p) for p in goal_ext]
             print(f'[MAZE] 입구 {auto_s} → 출구 {auto_g}')
         else:
             print('[MAZE] 입구·출구를 찾지 못함 → 이미지 모서리 기준 자동 선택')

@@ -8,7 +8,7 @@ import time
 import cv2
 import numpy as np
 
-from .camera_select import choose_camera
+from .camera_select import ReconnectingCamera
 from .motion import MockRobot
 from .paper_maze import detect_marker_corners, detect_markers, perspective_board
 from .paper_tictactoe import cell_ink, detect_human_o, x_strokes
@@ -358,8 +358,8 @@ def run(args, robot, config):
         return
 
     settings = config['camera']
-    index = choose_camera(int(settings.get('index', 0)))   # [실기] RealSense 컬러를 자동으로 (설정 index 는 fallback)
-    camera = cv2.VideoCapture(index)
+    camera = ReconnectingCamera(int(settings.get('index', 0)))   # [실기] RealSense 컬러 자동 + 끊기면 다시 연결
+    index = camera.index
     try:
         if not camera.isOpened():
             raise RuntimeError(f"Cannot reopen camera /dev/video{index}")

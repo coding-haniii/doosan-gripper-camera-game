@@ -606,7 +606,7 @@ def tic_air_test(config_path, cells=TEST_CELLS, lift=TEST_LIFT_MM, return_pen=Tr
     import cv2
     import numpy as np
     from runpy import run_path
-    from .camera_select import choose_camera
+    from .camera_select import ReconnectingCamera
     from .paper_maze import perspective_board
     cfg = yaml.safe_load(open(config_path, encoding='utf8'))
     pen = lambda action: subprocess.run([sys.executable, '-m', 'robot_games.pen_holder', action, '--execute-motion', '--yes',
@@ -617,7 +617,7 @@ def tic_air_test(config_path, cells=TEST_CELLS, lift=TEST_LIFT_MM, return_pen=Tr
         return rc
     tic = run_path(str(ROOT / 'robot_games/tictactoe/tictactoe.py'), run_name='robot_games._tic_test')
     cam = cfg.get('camera') or {}
-    cap = cv2.VideoCapture(choose_camera(int(cam.get('index', 0))), cv2.CAP_V4L2)
+    cap = ReconnectingCamera(int(cam.get('index', 0)))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(cam.get('width', 1280)))
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(cam.get('height', 720)))
     found = []

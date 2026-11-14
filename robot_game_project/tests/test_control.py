@@ -114,3 +114,28 @@ def test_ocr_noise_two_letter_alias_not_used_inside_sentence():
     noisy = 'ad :" MILO ere, 7 eo . an rm It a ara ro! | Be tes. teenie'   # 2026-11-14 미로 카드가 종료로 읽힌 OCR
     assert r.match(noisy)[0] != 'exit'
     assert r.match('ab STOP cd')[0] == 'exit'        # 정식 키워드는 문장 안에서도
+
+
+def test_reconnecting_camera_reopens_after_disconnect():
+    import numpy as np
+    from robot_games.camera_select import ReconnectingCamera
+    frame = np.zeros((4, 4, 3), np.uint8)
+
+    class Cap:
+        def __init__(self, i, frames):
+            self.i, self.frames = i, list(frames)
+        def isOpened(self): return True
+        def set(self, *a): return True
+        def release(self): pass
+        def read(self): return (True, frame) if self.frames.pop(0) else (False, None)
+
+    plan = {6: [True, False], 7: [True]}                 # video6 에서 한 장 읽고 끊김 → video7 로 다시 붙음
+    picks = iter([6, RuntimeError, 7])
+    def chooser(_):
+        p = next(picks)
+        if p is RuntimeError: raise RuntimeError('not yet')
+        return p
+    cam = ReconnectingCamera(chooser=chooser, opener=lambda i: Cap(i, plan[i]), sleep=lambda s: None)
+    assert cam.read()[0] and cam.index == 6
+    ok, f = cam.read()
+    assert ok and f is frame and cam.index == 7
