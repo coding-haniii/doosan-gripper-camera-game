@@ -79,3 +79,22 @@ def test_profile_packets_slow_the_gripper():
     assert [p[:7] for p in pk] == [bytes([1, 0x10, 0x01, 0x16, 0, 2, 4]), bytes([1, 0x10, 0x01, 0x18, 0, 2, 4])]
     assert pk[0][7:9] == (600).to_bytes(2, 'big')
     assert g._Protocol(CFG).profile() == []                               # 설정이 없으면 보내지 않음
+
+
+def test_gripper_switches_manual_to_autonomous_before_drl():
+    from robot_games.gripper import FlangeGripper
+    calls = []
+
+    class DR:
+        ROBOT_MODE_AUTONOMOUS = 1
+        mode = 0
+        def get_robot_mode(self): return self.mode
+        def set_robot_mode(self, m): calls.append(m); self.mode = m; return 0
+        def drl_script_run(self, system, code): calls.append('run'); return 0
+
+    g = FlangeGripper.__new__(FlangeGripper)
+    g.dr, g.system = DR(), 0
+    assert g._start_drl('code')
+    assert calls == [1, 'run']                      # 수동(0) → 자동(1) 로 바꾼 뒤 DRL 실행
+    calls.clear()
+    assert g._start_drl('code') and calls == ['run']   # 이미 자동이면 그대로

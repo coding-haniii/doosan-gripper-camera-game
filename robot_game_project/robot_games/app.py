@@ -127,7 +127,7 @@ def main():
         if game=='maze' and args.paper_maze:      # 카메라 종이 미로: 비전→JSON→CSV→로봇 연속 실행
             from .maze_game import run as run_paper_maze
             argv=['--mode',args.mode,'--source',args.paper_maze_source,'--seed',str(args.seed)]
-            if args.execute_motion: argv.append('--execute-motion')
+            if args.execute_motion: argv+=['--execute-motion','--yes']   # [실기] 펜 집기처럼 --execute-motion 을 승인으로 보고 RUN 입력 생략
             if args.image: argv+=['--image',args.image]
             rc=run_paper_maze(argv)
             if rc:raise SystemExit(rc)

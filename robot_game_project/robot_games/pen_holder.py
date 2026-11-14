@@ -30,7 +30,8 @@ MAX_SHIFT_MM = 200.0           # 교시 때보다 이만큼 넘게 옮겨져 있
 SLOW_MM_S = 30.0               # 거치대 쪽으로 오르내릴 때 속도
 REHEARSAL_LIFT_MM = 50.0
 STATE_PATH = ROOT / 'out' / 'pen_holder_state.json'   # 집을 때 잰 거치대 위치 (반납 때 씀)
-VIEW_OFFSET_Y_MM = 150.0       # 반납 전 마커를 다시 잴 때 거치대 위에서 옆(+Y)으로 비키는 거리
+MAX_REFINE_SHIFT_MM = 30.0     # 반납 직전 다시 잰 위치가 집을 때보다 이만큼 넘게 다르면 꽂지 않음 (2026-11-11 실제 밀림 20mm)
+VIEW_OFFSET_Y_MM = 150.0      # 반납 전 마커를 다시 잴 때 거치대 위에서 옆(+Y)으로 비키는 거리
 MIN_APPROACH_DZ_MM = 20.0
 MIN_REHEARSAL_LIFT_MM = 10.0   # --lift 하한: 손가락 끝이 부품 윗면보다 위에 남도록
 
@@ -272,8 +273,13 @@ def view_and_refine(robot, h, rough, measure, lift=0.0, log=print):
     view[1] += VIEW_OFFSET_Y_MM
     robot.move_line(view)
     marker = measure()                              # 안 보이면 HolderError → 꽂지 않음
+    moved = math.hypot(marker[0] - rough[0], marker[1] - rough[1])
     log(f'[HOLDER] 거치대 위에서 다시 잰 마커 ({marker[0]:.1f}, {marker[1]:.1f}) {marker[2]:.1f}°'
-        f' (대략값과 {math.hypot(marker[0] - rough[0], marker[1] - rough[1]):.1f}mm 차이)')
+        f' (대략값과 {moved:.1f}mm 차이)')
+    # [실기] 2026-11-14 카메라나 테이블이 밀려 86mm 다르게 재졌는데 그대로 꽂고 그리퍼를 열었다 → 크게 다르면 꽂지 않는다
+    if moved > MAX_REFINE_SHIFT_MM:
+        raise HolderError(f'집을 때보다 거치대가 {moved:.0f}mm 다르게 보임 (한도 {MAX_REFINE_SHIFT_MM:g}mm) → '
+                          '카메라·테이블이 움직였는지 확인. 펜은 쥔 채로 둠')
     return marker, holder_poses(h, marker, lift)
 
 
