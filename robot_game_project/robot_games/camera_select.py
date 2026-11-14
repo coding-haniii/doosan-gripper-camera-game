@@ -61,11 +61,16 @@ def can_read(index, need_color=True, tries=3):
 
 
 def choose_camera(fallback=0, devices=VIDEO_DEVICES, reader=can_read):
-    """쓸 카메라 번호. RealSense 컬러를 우선, 없으면 fallback. 둘 다 안 되면 RuntimeError."""
-    for index in realsense_candidates(devices):
+    """쓸 카메라 번호. RealSense 컬러를 우선, RealSense 가 연결돼 있지 않을 때만 fallback. 안 되면 RuntimeError."""
+    candidates = realsense_candidates(devices)
+    for index in candidates:
         if reader(index):
             print(f'[CAMERA] RealSense 컬러: /dev/video{index}', flush=True)
             return index
+    if candidates:
+        # [실기] RealSense 가 꽂혀 있는데 못 읽으면(다른 프로그램이 사용 중) 노트북 내장 카메라로 넘어가지 않는다.
+        # 2026-11-14 컨트롤 센터 미리보기가 내장 카메라(사람 얼굴)를 보여 줌 → 게임·보정이 엉뚱한 영상을 쓰면 안 됨
+        raise RuntimeError(f'RealSense(/dev/video{candidates}) 영상을 읽지 못함 — 다른 프로그램이 카메라를 쓰고 있는지 확인')
     if reader(fallback, need_color=False):
         print(f'[CAMERA] RealSense 컬러를 찾지 못함 → 기본 카메라 /dev/video{fallback}', flush=True)
         return fallback

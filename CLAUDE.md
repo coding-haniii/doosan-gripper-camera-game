@@ -15,15 +15,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install numpy "opencv-python>=4.8,<5" PyYAML "pytest>=8,<10"   # requirements.txt 는 ROS 환경 freeze 라 쓰지 않음
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests/   # 보정 도구·조그·그리퍼 패킷 테스트
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_calib_jog.py -k <이름>   # 테스트 하나만
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests/   # 보정·조그·그리퍼·펜 거치대·app 펜 단계·틱택토 X·movesx 평활화 (로봇·카메라 없이)
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests/test_pen_holder.py -k <이름>   # 테스트 하나만
 .venv/bin/python -m robot_games.maze_game --source demo                                  # 미로 mock (카메라·로봇 없음)
 .venv/bin/python -m robot_games.maze_game --mode emulator --use-real-calibration --execute-motion   # 실측 보정 CSV를 에뮬레이터로 리허설
 .venv/bin/python scripts/preview_maze_path.py                                            # 로봇 없이 실기 경로를 사진 위에 그려 확인
 .venv/bin/python -m robot_games.maze_game --source camera --mode real --execute-motion   # 미로 실기 (bringup 필요, REAL_CELL.md)
 .venv/bin/python -m robot_games.app --game 1 --mode real --execute-motion                 # 틱택토 실기 (로봇 X, 사람 O)
 .venv/bin/python -m robot_games.app --game camera --mode real --execute-motion           # 카드(OCR)로 게임 선택 후 실기 (tesseract-ocr·kor 필요)
-.venv/bin/python -m robot_games.calibrate view|markers|camera-robot|poses|gripper        # 재보정·교시·그리퍼 시험 도구
+.venv/bin/python -m robot_games.control                                                  # 컨트롤 센터 창: 조그·home·그리퍼·펜 집기/반납·카메라·게임 실행 (bringup 필요)
+.venv/bin/python -m robot_games.control --tic-air-test | --maze-air-test                 # 펜 집기 → 틱택토 5칸 / 미로 경로를 종이 5mm 위 허공에 → 펜 반납 (관제센터 '테스트' 버튼과 같음)
+.venv/bin/python -m robot_games.pen_holder pick|return --execute-motion [--rehearsal]      # 펜 거치대 단독 집기·반납 (--rehearsal: 50mm 위에서 경로만)
+.venv/bin/python -m robot_games.calibrate view|markers|camera-robot|poses|holder|gripper  # 재보정·교시(holder=거치대 잡기 자세)·그리퍼 시험 도구
 ```
 
 실기·에뮬레이터 명령은 `source /opt/ros/jazzy/setup.bash && source ~/ros2_ws/install/setup.bash` 한 셸에서 실행합니다. 이 PC에는 두산 에뮬레이터(`doosanrobot/dsr_emulator` Docker)도 있습니다.
@@ -39,6 +42,9 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q -p no:cacheprovid
   - `motion.GuardedDoosan`: `DSR_ROBOT2` 별칭, REAL 컨트롤러 확인, 속도 배율 100%, 도착 확인, `min_pen_z_base_mm` 하한. 펜 내린 구간은 `movesx`로 그립니다(50mm/s, 상한 60).
   - `dsr_preflight.py`: 팀원 커밋에서 빠져 있던 파일을 추가했습니다. `camera_select.py`는 실행할 때마다 RealSense 컬러 노드를 찾습니다.
 - **틱택토 실기**(`tictactoe/tictactoe.py`, 팀원 미리보기에 연결 지점만 추가): `RobotX`가 X 획(보드 px)을 `inv(matrix)` → 카메라 px → 마커 호모그래피(`configs/field/` 실측 좌표) → 로봇 XY로 바꿔 `run_rows`로 그리고 home으로 비킵니다. 펜 높이는 미로와 같은 `my_verified_calibration_real.json`(설정 `robot.drawing_calibration`으로 리허설용 사본 지정 가능). 그린 뒤 `refresh_board`로 보드를 다시 찍어야 `new_human_move`가 다음 O를 막지 않습니다.
+- **앱 흐름**(`app.py`): 카드/`--game`으로 게임을 고르고, `robot.pen_from_holder`가 true면 미로·틱택토 앞뒤로 `pen_step`이 `robot_games.pen_holder`를 **별도 프로세스**로 띄워 펜을 집고(오류여도) 반납합니다. `DSR_ROBOT2` 연결이 프로세스당 하나라서, 반납 전에 게임 쪽 연결을 `close()`합니다. 종료 코드 3(이미 쥐고 있음)·4(빈 손)는 성공으로 봅니다. 종료 카드는 혹시 쥐고 있으면 반납만 합니다.
+- **펜 거치대**(`pen_holder.py`): 카메라로 마커 25번(`vision.holder_marker_id`)의 위치·각도를 재고, `configs/field/robot_poses.json`에 교시한 잡기 자세(교시 때 마커 기준 상대값)를 지금 마커 위치로 옮깁니다. 반납할 때는 집을 때 저장한 마커 값(`out/pen_holder_state.json`)으로 거치대 위까지 가서 다시 재고 꽂습니다.
+- **컨트롤 센터**(`control.py`): Tk 창은 로봇에 직접 붙지 않고, `--worker` 하위 프로세스가 `GuardedDoosan`을 잡고 JSON 한 줄씩 주고받습니다. 조그는 `jog.JogPanel._move`를 그대로 써서 하한 검사가 같습니다. 펜 거치대·게임을 띄울 때는 worker와 카메라를 놓았다가 다시 잡습니다(게임은 RUN 입력 때문에 gnome-terminal에서 실행).
 - **보정·교시 도구** `robot_games/calibrate.py` + `jog.py`(예전 저장소에서 옮김): 로봇 연결은 팀원 `motion.GuardedDoosan(for_calibration=True)`, 마커 검출은 `paper_maze.detect_markers`, 카메라는 `camera_select`, 그리퍼 시험은 `gripper.FlangeGripper`(팀원 `RobotisGripper` 옆에 추가)를 씁니다. 결과는 `configs/field/`에 저장되고, `scripts/make_maze_calibration.py`가 마커 실측값으로 `configs/my_verified_calibration_real.json`을 다시 만듭니다.
 - 같은 일을 하는 코드를 두 벌 두지 않습니다. 필요한 기능은 팀원 파일에 메서드나 함수로 추가합니다.
 
